@@ -6,11 +6,9 @@ This repository is an independent project developed and maintained by **Francesc
 
 It is **not an official Snowflake release, product, service, publication, reference architecture, support offering, or statement of Snowflake policy**. Snowflake Inc. did not review, approve, sponsor, endorse, certify, or warrant this project. Any reference to Snowflake products or documentation is descriptive only and does not imply endorsement or affiliation.
 
-It is **not an official Hermes Agent release, product, service, publication, integration, reference architecture, support offering, or statement of NousResearch policy**. **NousResearch Inc. (the authors and maintainers of Hermes Agent) did not review, approve, sponsor, endorse, certify, authorize, commission, or warrant this project.** They were not involved in its design, development, testing, publication, maintenance, or distribution. This project downloads and deploys Hermes Agent via its public installer; it does not distribute, modify, or fork the Hermes Agent source code. Any reference to Hermes Agent, its software, documentation, interfaces, or trademarks is descriptive and for interoperability purposes only. It does not imply affiliation, partnership, agency, approval, or endorsement.
+It is also **not an official Hermes Agent release, product, service, publication, integration, reference architecture, support offering, or statement of NousResearch policy**. **NousResearch Inc. (the authors and maintainers of Hermes Agent) did not review, approve, sponsor, endorse, certify, authorize, commission, or warrant this project.** They were not involved in its design, development, testing, publication, maintenance, or distribution. This project downloads and deploys Hermes Agent via its public installer; it does not distribute, modify, or fork the Hermes Agent source code. Any reference to Hermes Agent, its software, documentation, interfaces, or trademarks is descriptive and for interoperability purposes only. It does not imply affiliation, partnership, agency, approval, or endorsement.
 
 NousResearch Inc. and the Hermes Agent maintainers have no responsibility for this repository, its code, documentation, deployment instructions, security posture, maintenance, support, compatibility, availability, or results. Questions, defects, incidents, or claims relating to this repository must not be presented as obligations of NousResearch Inc. or the Hermes Agent project. Hermes Agent software and trademarks remain subject to their applicable upstream licenses, terms, and policies.
-
-It is also **not an official n8n release, product, service, publication, integration, reference architecture, support offering, or statement of n8n policy** where components are shared with the n8n deployment. n8n GmbH and the n8n project maintainers did not review, approve, sponsor, endorse, certify, authorize, commission, or warrant this project and have no responsibility for it.
 
 ## No Warranty
 
@@ -20,7 +18,7 @@ No statement in this repository constitutes legal, security, compliance, financi
 
 ## Limitation of Liability
 
-To the maximum extent permitted by applicable law, **Francesco Battaglieri, Snowflake Inc., NousResearch Inc., n8n GmbH, and their respective affiliates, employees, officers, directors, representatives, agents, contractors, licensors, service providers, successors, and contributors shall have no responsibility or liability** for any direct, indirect, incidental, special, consequential, exemplary, punitive, statutory, contractual, tort-based, or other damages, losses, expenses, liabilities, penalties, demands, proceedings, or claims arising from or related to this project.
+To the maximum extent permitted by applicable law, **Francesco Battaglieri, Snowflake Inc., NousResearch Inc., and their respective affiliates, employees, officers, directors, representatives, agents, contractors, licensors, service providers, successors, and contributors shall have no responsibility or liability** for any direct, indirect, incidental, special, consequential, exemplary, punitive, statutory, contractual, tort-based, or other damages, losses, expenses, liabilities, penalties, demands, proceedings, or claims arising from or related to this project.
 
 This limitation includes, without limitation, data loss or corruption, credential exposure, privacy breaches, security incidents, unauthorized access, service interruption, lost revenue, lost profits, lost business opportunities, business interruption, infrastructure or cloud costs, regulatory consequences, third-party claims, license violations, configuration errors, deployment failures, operational failures, vulnerabilities, dependency defects, incompatibility with current or future product versions, and reliance on documentation, generated code, automation, or suggested configurations.
 
@@ -40,8 +38,8 @@ By using, copying, modifying, deploying, or distributing this project, users acc
 - Confirming compliance with applicable laws, regulations, contracts, organizational policies, Snowflake terms, Hermes Agent licensing terms, and third-party licenses.
 - Monitoring costs, service health, security advisories, dependency vulnerabilities, backups, and recovery procedures.
 
-Users must not represent this project as an official Snowflake, NousResearch, or n8n deliverable, or as approved by or supported by any of those organizations.
+Users must not represent this project as an official Snowflake or NousResearch deliverable, or as approved by or supported by either of those organizations.
 
 ## Trademarks
 
-Snowflake, Snowpark Container Services, Snowflake Postgres, Cortex, Cortex Code, and related marks are trademarks or registered trademarks of Snowflake Inc. Hermes Agent and related marks are trademarks or intellectual property of NousResearch Inc. n8n and related marks are trademarks of their respective owners. Trademark use in this repository is solely for identification and interoperability purposes.
+Snowflake, Snowpark Container Services, Snowflake Postgres, Cortex, Cortex Code, and related marks are trademarks or registered trademarks of Snowflake Inc. Hermes Agent and related marks are trademarks or intellectual property of NousResearch Inc. Trademark use in this repository is solely for identification and interoperability purposes.

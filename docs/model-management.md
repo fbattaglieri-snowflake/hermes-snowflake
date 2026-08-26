@@ -28,7 +28,7 @@ The `--new` flag tests only models not yet in `models.json`. `--all` runs a regr
 | Verdict | Meaning |
 |---|---|
 | `COMPATIBLE` | Tool calling works through the proxy. Safe to promote to configuration. |
-| `WITH RESERVATION` | Responds but does not support tool calling. Suitable for text generation (n8n Basic LLM Chain) but not for Hermes agent mode. |
+| `WITH RESERVATION` | Responds but does not support tool calling. Suitable for text generation only; not for Hermes agent mode. |
 | `INCOMPATIBLE` | Does not respond from this account. Do not add to configuration. |
 
 Exit code 1 indicates a regression: a model already in `models.json` no longer passes its tests.

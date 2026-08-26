@@ -32,11 +32,10 @@ ottiene HTTP 401 (trappola gia' incontrata, playbook §9).
 
 Verdetti
 --------
-COMPATIBILE     testi e tool calling funzionano attraverso il proxy: promuovibile
-CON RISERVA     risponde ma senza tool calling utilizzabile. Va bene per generare
-                testo (n8n Basic LLM Chain), NON per Hermes in modalita' agente
-                ne' per il nodo AI Agent, che si reggono sui tool
-INCOMPATIBILE   non risponde affatto da questo account: non metterlo in config
+COMPATIBILE     text and tool calling work through the proxy: safe to promote
+CON RISERVA     responds but without usable tool calling. Suitable for text generation
+                only; NOT for Hermes in agent mode since agents depend on tool calling
+INCOMPATIBILE   does not respond at all from this account: do not add to config
 
 Exit code: 1 se un modello GIA' in cortex_models.json regredisce (era in
 configurazione e ora non risponde, o ha perso il tool calling). Serve per

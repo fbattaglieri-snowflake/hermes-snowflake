@@ -6,7 +6,7 @@ A minimal, dependency-free Python HTTP server that runs inside the Hermes contai
 
 - `POST /v1/chat/completions` — forwards to Cortex after header and body normalization.
 - `GET /v1/models` — serves the `models.json` catalog.
-- `POST /api/v2/statements` — forwards to the Snowflake SQL API for n8n workflows.
+- `POST /api/v2/statements` — forwards to the Snowflake SQL API (for agent tool calls that require SQL execution).
 - `GET /healthz` — process health check.
 
 ## Authentication

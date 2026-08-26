@@ -172,12 +172,12 @@ def t4_tools_reasoning(host, pat):
 
 
 def t5_responses_api(host, pat):
-    """Extra: /v1/responses. Se si abilita, in n8n si puo' riaccendere 'Use Responses API'."""
+    """Extra: /v1/responses endpoint check."""
     status, parsed = call(host, pat, "/responses", {"model": CLAUDE, "input": "ping"})
     if status == 200:
-        return OK, "HTTP 200", "in n8n si puo' riattivare 'Use Responses API'"
+        return OK, "HTTP 200", "/v1/responses endpoint is available"
     msg = parsed.get("message", parsed) if isinstance(parsed, dict) else parsed
-    return BROKEN, "HTTP %s — %s" % (status, str(msg)[:110]), "tenere spento il toggle in n8n"
+    return BROKEN, "HTTP %s — %s" % (status, str(msg)[:110]), "endpoint not available"
 
 
 def t6_anthropic_endpoint(host, pat):

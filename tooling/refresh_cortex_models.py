@@ -44,7 +44,7 @@ MODELS_FILE = os.environ.get("CORTEX_MODELS_PATH", os.path.join(HERE, "..", "pro
 
 DEFAULT_CONNECTION = os.environ.get("SNOWFLAKE_CONNECTION", "default")
 DEFAULT_HOST = os.environ.get("SNOWFLAKE_HOST", "localhost")
-DEFAULT_STAGE = "@n8n_platform.core.cortex_config"
+DEFAULT_STAGE = "@hermes_platform.core.hermes_config"
 DEFAULT_CONTEXT = 128000
 
 REASONING_TOOLS_ERROR = "function tools with reasoning_effort"
@@ -346,7 +346,7 @@ def main():
             print("  %-28s %s" % (name, note))
     if legacy:
         print("\nLEGACY: rispondono adesso ma hanno una data di morte.")
-        print("Se n8n o Hermes li usa in un workflow, quel workflow si rompe all'EOL.")
+        print("If any workflow or agent uses them, it will break at EOL.")
     if added:
         print("\nATTENZIONE: %d modelli nuovi hanno context=%d (prudenziale)."
               % (len(added), DEFAULT_CONTEXT))
@@ -369,8 +369,8 @@ def main():
 
     doc["models"] = models
     doc["tools_require_reasoning_effort_none"] = constrained
-    # Non lo usa il proxy: serve a chi configura n8n. Il nodo AI Agent richiede il
-    # tool calling, quindi con questi modelli va scelto un nodo LLM semplice.
+    # Not used by the proxy. Informs the caller that these models cannot be used
+    # with tool calling; agents or orchestrators that depend on tools must exclude them.
     doc["tools_unsupported"] = sorted(no_tools)
     doc["_legacy"] = dict(sorted(legacy)) or {}
     doc["_non_disponibili"] = merged

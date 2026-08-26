@@ -2,7 +2,7 @@
 
 Deploy [Hermes Agent](https://hermes-agent.nousresearch.com) (NousResearch) to Snowflake Snowpark Container Services — with persistent block storage, a Cortex AI compatibility proxy, Tailscale-based remote client access, and GitHub Actions OIDC deployment.
 
-> **Disclaimer:** This independent project was developed and is maintained by **Francesco Battaglieri**, with the assistance of **Snowflake Cortex Code**. It is not an official release, product, service, publication, or support offering from Snowflake Inc., NousResearch Inc. (authors of Hermes Agent), or n8n GmbH. **None of these organizations reviewed, approved, sponsored, endorsed, certified, authorized, commissioned, or warranted this project.** They bear no responsibility for it. Use is entirely at your own risk. See [DISCLAIMER.md](DISCLAIMER.md) for the full no-warranty, limitation-of-liability, non-affiliation, and user-responsibility terms.
+> **Disclaimer:** This independent project was developed and is maintained by **Francesco Battaglieri**, with the assistance of **Snowflake Cortex Code**. It is not an official release, product, service, publication, or support offering from Snowflake Inc. or NousResearch Inc. (authors of Hermes Agent). **Neither organization reviewed, approved, sponsored, endorsed, certified, authorized, commissioned, or warranted this project.** They bear no responsibility for it. Use is entirely at your own risk. See [DISCLAIMER.md](DISCLAIMER.md) for the full no-warranty, limitation-of-liability, non-affiliation, and user-responsibility terms.
 
 ## Why This Exists
 

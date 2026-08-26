@@ -1,0 +1,68 @@
+spec:
+  platformMonitor:
+    metricConfig:
+      groups:
+        - system
+  containers:
+    - name: hermes
+      image: /{{ database }}/{{ schema }}/{{ hermes_image_repository }}/hermes:{{ image_tag }}
+      env:
+        HERMES_PROVIDER: "{{ hermes_provider }}"
+        HERMES_MODEL: "{{ hermes_model }}"
+        HERMES_SELFTEST: "1"
+      resources:
+        requests:
+          cpu: "2"
+          memory: "8Gi"
+        limits:
+          cpu: "4"
+          memory: "16Gi"
+      volumeMounts:
+        - name: hermes-data
+          mountPath: /root
+      secrets:
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.HERMES_SSH_PUBKEY"
+          secretKeyRef: secret_string
+          envVarName: SSH_PUBLIC_KEY
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.CF_TUNNEL_TOKEN"
+          secretKeyRef: secret_string
+          envVarName: CF_TUNNEL_TOKEN
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.TELEGRAM_BOT_TOKEN"
+          secretKeyRef: secret_string
+          envVarName: TELEGRAM_BOT_TOKEN
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.TELEGRAM_HOME_CHANNEL"
+          secretKeyRef: secret_string
+          envVarName: TELEGRAM_HOME_CHANNEL
+      readinessProbe:
+        port: 7681
+        path: /
+        periodSeconds: 15
+        failureThreshold: 20
+      livenessProbe:
+        port: 7681
+        path: /
+        periodSeconds: 30
+        failureThreshold: 5
+  endpoints:
+    - name: hermes-terminal
+      port: 7681
+      public: true
+      protocol: HTTP
+  volumes:
+    - name: hermes-data
+      source: block
+      size: 50Gi
+      blockConfig:
+        iops: 3000
+        throughput: 125
+        encryption: SNOWFLAKE_FULL
+        snapshotOnDelete: true
+        snapshotDeleteAfter: 14d
+serviceRoles:
+  - name: user
+    endpoints:
+      - hermes-terminal

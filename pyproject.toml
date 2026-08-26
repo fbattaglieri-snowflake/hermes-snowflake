@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+testpaths = ["proxy", "tooling"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "S", "B"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+# Proxy and tooling scripts use urllib and snow CLI directly — these warnings are expected.
+"proxy/cortex_proxy.py" = ["S310", "S110"]
+"tooling/*.py" = ["S310", "S603", "S607"]
+# Configure script: SESSION_TOKEN_CMD is a path, not a password (S105 false positive).
+"docker/hermes/hermes_configure.py" = ["S105"]

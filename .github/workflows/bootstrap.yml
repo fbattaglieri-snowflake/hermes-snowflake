@@ -1,0 +1,58 @@
+name: Bootstrap Snowflake
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hermes-snowflake-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: bootstrap
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+          cli-version: "3.16"
+      - name: Create Snowflake infrastructure
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_BOOTSTRAP_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_BOOTSTRAP_ROLE }}
+        run: |
+          snow connection test -x
+          snow sql -x --local-only --filename infrastructure/sql/10_bootstrap.sql \
+            -D "bootstrap_role=${{ vars.SNOWFLAKE_BOOTSTRAP_ROLE }}" \
+            -D "deploy_role=${{ vars.SNOWFLAKE_DEPLOY_ROLE }}" \
+            -D "database=${{ vars.SNOWFLAKE_DATABASE }}" \
+            -D "schema=${{ vars.SNOWFLAKE_SCHEMA }}" \
+            -D "warehouse=${{ vars.SNOWFLAKE_WAREHOUSE }}" \
+            -D "compute_pool=${{ vars.HERMES_COMPUTE_POOL }}" \
+            -D "instance_family=${{ vars.HERMES_INSTANCE_FAMILY }}" \
+            -D "hermes_image_repository=${{ vars.HERMES_IMAGE_REPOSITORY }}" \
+            -D "egress_integration=HERMES_EGRESS_EAI"
+      - name: Post-bootstrap reminder
+        run: |
+          echo "Bootstrap complete. Before deploying, set these secrets via Snowsight or snow sql:"
+          echo ""
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SSH_PUBKEY"
+          echo "    SET SECRET_STRING = '<your SSH public key>';"
+          echo ""
+          echo "  -- Optional: Cloudflare tunnel"
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.CF_TUNNEL_TOKEN"
+          echo "    SET SECRET_STRING = '<your Cloudflare tunnel token>';"
+          echo ""
+          echo "  -- Optional: Telegram"
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.TELEGRAM_BOT_TOKEN"
+          echo "    SET SECRET_STRING = '<your Telegram bot token>';"
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.TELEGRAM_HOME_CHANNEL"
+          echo "    SET SECRET_STRING = '<your Telegram chat_id>';"

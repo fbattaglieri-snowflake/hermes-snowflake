@@ -1,0 +1,31 @@
+hermes-snowflake
+Copyright 2026 Francesco Battaglieri
+
+This project deploys Hermes Agent (by NousResearch Inc.) to Snowflake Snowpark
+Container Services. Hermes Agent is installed via the official upstream installer
+during the container build; its source code is not redistributed here.
+See https://hermes-agent.nousresearch.com for licensing and terms.
+
+Snowflake, Snowpark Container Services, Snowflake Postgres, and Cortex are
+trademarks or registered trademarks of Snowflake Inc. This project is an
+independent reference implementation developed by Francesco Battaglieri with the
+assistance of Snowflake Cortex Code. It is not an official Snowflake, NousResearch,
+or n8n release, product, service, publication, or support offering.
+NousResearch Inc. (authors of Hermes), Snowflake Inc., and n8n GmbH did not
+review, approve, sponsor, endorse, certify, authorize, commission, or warrant
+this project and were not involved in its design, development, testing,
+publication, maintenance, or distribution.
+
+Use of this project is entirely at the user's own risk. To the maximum extent
+permitted by applicable law, Francesco Battaglieri, Snowflake Inc.,
+NousResearch Inc., n8n GmbH, and their respective affiliates, employees,
+officers, directors, representatives, agents, contractors, licensors, service
+providers, successors, and contributors have no responsibility or liability for
+any direct, indirect, incidental, special, consequential, exemplary, punitive,
+or other damages, losses, costs, claims, service interruptions, data loss,
+security incidents, license violations, configuration errors, deployment failures,
+or third-party claims arising from or related to the use, inability to use,
+modification, deployment, operation, or distribution of this project.
+Users are solely responsible for reviewing the source code, validating it in a
+non-production environment, securing credentials and data, confirming regulatory
+and licensing requirements, and operating any resulting deployment.

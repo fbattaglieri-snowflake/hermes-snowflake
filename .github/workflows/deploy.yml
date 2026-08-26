@@ -1,0 +1,92 @@
+name: Deploy to Snowflake
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hermes-snowflake-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+          cli-version: "3.16"
+      - name: Authenticate and resolve registry
+        id: registry
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+          SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
+          SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+        run: |
+          snow connection test -x
+          registry="$(snow spcs image-registry url -x --format CSV --silent | tr -d '\r\n\"')"
+          test -n "$registry"
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+          snow spcs image-registry token -x --format JSON \
+            | python -c 'import json,sys; print(json.load(sys.stdin)[0]["token"])' \
+            | docker login "$registry" -u 0sessiontoken --password-stdin
+      - name: Build and push immutable hermes image
+        env:
+          REGISTRY: ${{ steps.registry.outputs.registry }}
+          DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+          SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
+          HERMES_REPOSITORY: ${{ vars.HERMES_IMAGE_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker buildx build --platform linux/amd64 --push \
+            -f docker/hermes/Dockerfile \
+            -t "${REGISTRY}/${DATABASE,,}/${SCHEMA,,}/${HERMES_REPOSITORY,,}/hermes:${IMAGE_TAG}" \
+            .
+      - name: Stage service specification
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+          SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
+        run: |
+          snow stage copy infrastructure/specs/hermes.service.yaml @HERMES_CONFIG --overwrite
+      - name: Deploy service without dropping state
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+        run: |
+          snow sql -x --local-only --filename infrastructure/sql/20_deploy.sql \
+            -D "deploy_role=${{ vars.SNOWFLAKE_DEPLOY_ROLE }}" \
+            -D "database=${{ vars.SNOWFLAKE_DATABASE }}" \
+            -D "schema=${{ vars.SNOWFLAKE_SCHEMA }}" \
+            -D "warehouse=${{ vars.SNOWFLAKE_WAREHOUSE }}" \
+            -D "compute_pool=${{ vars.HERMES_COMPUTE_POOL }}" \
+            -D "hermes_image_repository=${{ vars.HERMES_IMAGE_REPOSITORY }}" \
+            -D "image_tag=${{ github.sha }}" \
+            -D "hermes_provider=${{ vars.HERMES_PROVIDER || 'snowflake-cortex-proxy' }}" \
+            -D "hermes_model=${{ vars.HERMES_MODEL || 'claude-sonnet-5' }}" \
+            -D "egress_integration=HERMES_EGRESS_EAI"
+      - name: Verify deployed containers and endpoint
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+        run: |
+          sleep 30
+          snow sql -x --local-only --filename infrastructure/sql/30_verify.sql \
+            -D "deploy_role=${{ vars.SNOWFLAKE_DEPLOY_ROLE }}" \
+            -D "database=${{ vars.SNOWFLAKE_DATABASE }}" \
+            -D "schema=${{ vars.SNOWFLAKE_SCHEMA }}"

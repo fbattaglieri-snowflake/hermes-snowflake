@@ -1,0 +1,44 @@
+name: Operate Stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Ordered stack operation
+        type: choice
+        required: true
+        options:
+          - suspend
+          - resume
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+          cli-version: "3.16"
+      - name: Suspend in dependency-safe order
+        if: inputs.action == 'suspend'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+        run: |
+          snow sql -x -q "ALTER SERVICE IF EXISTS ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SERVICE SUSPEND"
+          snow sql -x -q "ALTER COMPUTE POOL IF EXISTS ${{ vars.HERMES_COMPUTE_POOL }} SUSPEND"
+      - name: Resume in dependency-safe order
+        if: inputs.action == 'resume'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+        run: |
+          snow sql -x -q "ALTER COMPUTE POOL IF EXISTS ${{ vars.HERMES_COMPUTE_POOL }} RESUME"
+          snow sql -x -q "ALTER SERVICE IF EXISTS ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SERVICE RESUME"

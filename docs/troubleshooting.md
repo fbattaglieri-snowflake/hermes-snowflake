@@ -8,10 +8,10 @@ This file documents every known gotcha encountered during deployment and operati
 `hermes serve` without `--skip-build` tries to build the web UI. `npm` is present in the image but the web UI source is absent. The process stays alive but never opens a port, and `serve.log` is empty. Always use `--skip-build`.
 
 ### UDP and TUN networking unavailable (R-01)
-SPCS containers have no `/dev/net/tun`, `NET_ADMIN` is not granted, and the `tun` kernel module is not loadable. Tailscale must run with `--tun=userspace-networking`. QUIC/UDP egress is blocked; DERP relay over TCP/443 works correctly at ~3 ms from eu-central-1.
+SPCS containers have no `/dev/net/tun`, `NET_ADMIN` is not granted, and the `tun` kernel module is not loadable. Tailscale must run with `--tun=userspace-networking`. QUIC/UDP egress is blocked; DERP relay over TCP/443 works correctly.
 
 ### DERP performance (R-02)
-The Frankfurt DERP relay is ~3 ms from the SPCS eu-central-1 region. The earlier concern about relay latency does not apply in practice.
+The DERP relay closest to your SPCS region provides acceptable latency for interactive use. The earlier concern about relay latency does not apply in practice.
 
 ### Block volume masks image content
 `/root` is a 20 GiB block volume mounted at runtime. Everything the installer writes under `/root` at build time is hidden. The image keeps a copy in `/opt/hermes-seed` and restores it with `cp -a -n` (no-clobber) at every boot.

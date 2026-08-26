@@ -65,7 +65,7 @@ The Desktop probe only checks `GET /api/status`, which is a public endpoint. A W
 With this topology, the client cannot wake a suspended service. Tailscale has no process to initiate the outbound connection when the container is stopped.
 
 ```sql
-ALTER SERVICE N8N_PLATFORM.CORE.HERMES_SERVICE RESUME;
+ALTER SERVICE <DATABASE>.<SCHEMA>.HERMES_SERVICE RESUME;
 ```
 
 Wait 3–4 minutes, then verify with the `curl` from Step 1.

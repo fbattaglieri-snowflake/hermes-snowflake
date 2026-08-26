@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""Riverifica l'elenco dei modelli Cortex e riscrive cortex_models.json.
+"""Reverifies the Cortex model catalog and rewrites proxy/models.json.
 
-Perche' esiste: cortex_models.json e' la sorgente unica sia per cortex_proxy.py
-(che ci costruisce /v1/models, endpoint che il gateway Cortex non offre) sia per
-hermes_configure.py. Il catalogo di Snowflake cambia — modelli nuovi, modelli che
-vanno EOL, modelli elencati ma non realmente invocabili da questo account — e non
-si puo' fidarsi del catalogo da solo: SHOW CORTEX BASE MODELS elenca anche modelli
-che rispondono HTTP 400 'unknown model'. Quindi ogni nome va provato per davvero.
+Why this exists: models.json is the single source of truth for cortex_proxy.py
+(which builds the /v1/models endpoint that the Cortex gateway does not offer)
+and for hermes_configure.py. The Snowflake catalog changes — new models, EOL models,
+models listed but not actually reachable from a given account — and the catalog alone
+cannot be trusted: SHOW CORTEX BASE MODELS lists models that return HTTP 400
+'unknown model'. Each name must be tested with a real call.
 
-Cosa fa:
-  1. legge il catalogo con SHOW CORTEX BASE MODELS IN SCHEMA SNOWFLAKE.MODELS
-  2. per ogni nome candidato fa una chiamata reale a /chat/completions
-  3. per i modelli che rispondono, verifica se il tool calling richiede
-     reasoning_effort="none" (vincolo della famiglia gpt-5.6)
-  4. riscrive cortex_models.json: i context window dei modelli gia' noti sono
-     preservati, i nuovi entrano con un valore prudenziale da rivedere a mano
-  5. con --upload ricarica il file sullo stage, che il servizio rilegge a caldo
+What it does:
+  1. reads the catalog with SHOW CORTEX BASE MODELS IN SCHEMA SNOWFLAKE.MODELS
+  2. for each candidate name, makes a real call to /chat/completions
+  3. for responding models, checks whether tool calling requires
+     reasoning_effort="none" (constraint of the gpt-5.6 family)
+  4. rewrites models.json: known context windows are preserved,
+     new models get a conservative default to be reviewed manually
+  5. with --upload, re-uploads the file to the stage (reloaded hot by the service)
 
-Uso:
-    export CORTEX_PAT="$(cortex secret get hermes-cortex-pat)"   # oppure --pat-file
-    python3 refresh_cortex_models.py                 # dry-run, stampa solo il report
-    python3 refresh_cortex_models.py --write         # aggiorna cortex_models.json
-    python3 refresh_cortex_models.py --write --upload  # e ricarica sullo stage
+Usage:
+    export CORTEX_PAT="$(cortex secret get hermes-cortex-pat)"   # or --pat-file
+    python3 refresh_cortex_models.py                 # dry-run, report only
+    python3 refresh_cortex_models.py --write         # update models.json
+    python3 refresh_cortex_models.py --write --upload  # and reload to stage
 
-Il context window NON viene sondato: farlo richiederebbe di spedire centinaia di
-migliaia di token per modello. I valori vengono dalla documentazione, e per un
-modello nuovo lo script mette DEFAULT_CONTEXT segnalandolo nel report. Sottostimare
-e' sicuro (il client comprime prima del necessario), sovrastimare rompe le chiamate.
+The context window is NOT probed: doing so would require sending hundreds of thousands
+of tokens per model. Values come from the documentation; for a new model the script
+sets DEFAULT_CONTEXT and flags it in the report. Under-estimating is safe (the client
+compresses before needed); over-estimating breaks calls.
 """
 
 import argparse
@@ -264,10 +264,10 @@ def upload(connection, stage):
     )
     if out.returncode != 0:
         die("upload sullo stage ha fallito:\n%s" % (out.stderr or out.stdout))
-    print("caricato su %s" % stage)
-    print("il servizio rilegge il file entro ~5m (metadataCache); per applicarlo subito:")
-    print("  ALTER SERVICE N8N_PLATFORM.CORE.CORTEX_PROXY_SERVICE SUSPEND;")
-    print("  ALTER SERVICE N8N_PLATFORM.CORE.CORTEX_PROXY_SERVICE RESUME;")
+    print("uploaded to %s" % stage)
+    print("the service reloads the file within ~5 min (metadataCache); to apply immediately:")
+    print("  ALTER SERVICE <DATABASE>.<SCHEMA>.HERMES_SERVICE SUSPEND;")
+    print("  ALTER SERVICE <DATABASE>.<SCHEMA>.HERMES_SERVICE RESUME;")
 
 
 def main():
@@ -364,7 +364,8 @@ def main():
     merged = dict(doc.get("_non_disponibili", {}))
     merged.update(unavailable)
     merged["_commento"] = doc.get("_non_disponibili", {}).get(
-        "_commento", "Provati e NON funzionanti da questo account: non rimetterli in config.")
+        "_commento", "Models tested and NOT working (unknown or unavailable). "
+        "Do not add them back without re-testing.")
 
     doc["models"] = models
     doc["tools_require_reasoning_effort_none"] = constrained

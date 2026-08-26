@@ -5,7 +5,7 @@
 | Variable | Example | Purpose |
 |---|---|---|
 | `SNOWFLAKE_ACCOUNT` | `org-account` | Account identifier for the CLI. |
-| `SNOWFLAKE_DATABASE` | `N8N_PLATFORM` | Deployment database. |
+| `SNOWFLAKE_DATABASE` | `HERMES_PLATFORM` | Deployment database. |
 | `SNOWFLAKE_SCHEMA` | `CORE` | Deployment schema. |
 | `SNOWFLAKE_BOOTSTRAP_USER` | `HERMES_GITHUB_BOOTSTRAP` | OIDC bootstrap service user. |
 | `SNOWFLAKE_DEPLOY_USER` | `HERMES_GITHUB_DEPLOY` | OIDC production deploy service user. |

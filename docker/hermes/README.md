@@ -11,7 +11,7 @@ The image is based on Ubuntu 24.04 and installs Hermes Agent via the official up
 
 ## Block Volume Behaviour
 
-The SPCS service specification mounts a 20 GiB block volume at `/root`. This mount hides everything the image writes under `/root` at build time. `start.sh` restores missing files from `/opt/hermes-seed` using `cp -a -n` (no-clobber) at every boot.
+The SPCS service specification mounts a block volume at `/root` (size declared in the spec). This mount hides everything the image writes under `/root` at build time. `start.sh` restores missing files from `/opt/hermes-seed` using `cp -a -n` (no-clobber) at every boot.
 
 ## Build
 

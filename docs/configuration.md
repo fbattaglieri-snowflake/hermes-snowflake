@@ -13,7 +13,7 @@
 | `SNOWFLAKE_DEPLOY_ROLE` | `HERMES_GITHUB_DEPLOY_ROLE` | Production deploy role. |
 | `SNOWFLAKE_WAREHOUSE` | `HERMES_DEPLOY_WH` | Small warehouse for deployment SQL. |
 | `HERMES_COMPUTE_POOL` | `HERMES_CPU_POOL` | SPCS compute pool. |
-| `HERMES_INSTANCE_FAMILY` | `GEN_X64_G2_4` | Compute pool instance family. |
+| `HERMES_INSTANCE_FAMILY` | `CPU_X64_M` | Compute pool instance family. **Not portable between clouds** — the available families differ on AWS, Azure, and GCP. Check the Snowflake `CREATE COMPUTE POOL` documentation for your platform before setting this; an unavailable family fails bootstrap. |
 | `HERMES_IMAGE_REPOSITORY` | `HERMES_IMAGES` | Hermes image repository. |
 | `CORTEX_PROXY_IMAGE_REPOSITORY` | `CORTEX_PROXY_IMAGES` | Proxy image repository. |
 | `HERMES_EGRESS_EAI` | `HERMES_EGRESS_EAI` | External Access Integration name. |

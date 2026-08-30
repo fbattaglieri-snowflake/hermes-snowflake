@@ -38,6 +38,19 @@ grep -c collapse_parallel_tool_calls /opt/cortex_proxy.py /root/.hermes/cortex_p
 
 Both must report a non-zero count and the same `md5sum`. If `/opt` reports 0, the deployed image predates the fix and must be rebuilt.
 
+## Desktop Remote Gateway
+
+`start.sh` starts `tailscaled` and `hermes serve` (port 9119) at boot, with a 60-second watchdog, so the Desktop reconnects on its own after a restart. Confirm from the boot log:
+
+```text
+[hermes] tailnet IP: 100.x.y.z
+[hermes] hermes serve pronto su 100.x.y.z:9119 (Remote gateway del Desktop)
+```
+
+The tailnet IP is logged deliberately: the `readinessProbe` floods the log every 5 seconds, so with a tail of 400 it becomes unreachable after roughly 30 minutes.
+
+The watchdog polls `/api/status` rather than `hermes serve --status`, which reports nothing running while the port is serving. See [client-setup.md](client-setup.md) for recovery and the traps involved.
+
 ## Gateway and Cron
 
 The gateway is started automatically by `start.sh` when `TELEGRAM_BOT_TOKEN` is set, after the proxy is confirmed up, and is kept alive by a 60-second watchdog. Confirm it with:

@@ -5,9 +5,17 @@ This guide connects a Hermes Desktop instance to the backend running in SPCS, an
 ## Prerequisites
 
 - The SPCS Hermes service is `READY`.
-- `tailscaled` and `hermes serve` are running inside the container. **They are not started by `start.sh`**: after any container recreation you must start them by hand — see [After a container restart](#after-a-container-restart). This is the single most common reason the Desktop cannot connect.
-- You have the tailnet IP of the container (`tailscale ip -4` from inside the container, or from the Tailscale Admin Console).
+- `tailscaled` and `hermes serve` are started automatically by `start.sh` at boot, and kept alive by a 60-second watchdog. The boot log reports the tailnet IP and the backend state:
+
+  ```text
+  [hermes] tailnet IP: 100.x.y.z
+  [hermes] hermes serve pronto su 100.x.y.z:9119 (Remote gateway del Desktop)
+  ```
+
+  If those lines are missing, see [If the backend is not up](#if-the-backend-is-not-up).
+- You have the tailnet IP of the container (from the boot log above, `tailscale ip -4` inside the container, or the Tailscale Admin Console). It is **stable across restarts** because `tailscaled` state lives on the block volume.
 - You know the dashboard username and password configured via Snowflake Secrets.
+- On first deployment only: the `TS_AUTHKEY` secret is set to a **reusable, non-ephemeral** Tailscale auth key. See [configuration.md](configuration.md).
 
 ### Version alignment
 
@@ -27,7 +35,7 @@ Expected output:
 "auth_providers": ["basic"]
 ```
 
-If you see `connection refused` or a timeout, the problem is upstream: the service is suspended, `hermes serve` is not running, or Tailscale is not set up. Do not open the Desktop yet — go to [After a container restart](#after-a-container-restart).
+If you see `connection refused` or a timeout, the problem is upstream: the service is suspended, `hermes serve` is not running, or Tailscale is not set up. Do not open the Desktop yet — go to [If the backend is not up](#if-the-backend-is-not-up).
 
 ## Step 2 — Install Tailscale
 
@@ -59,52 +67,62 @@ In the multi-connection registry (below the main gateway settings, or via the co
 
 The Desktop probe only checks `GET /api/status`, which is a public endpoint. A WebSocket on `/api/ws` is separate. Send a message and verify that the response streams successfully.
 
-## After a container restart
+## If the backend is not up
 
-`start.sh` does not start `tailscaled` or `hermes serve`. A container recreation — `SUSPEND`/`RESUME`, `ALTER SERVICE`, an image upgrade, or an involuntary restart — therefore leaves the Desktop offline while the service reports `READY`. **No data is lost**: sessions and state live on the block volume. Only the two processes need to come back.
+`start.sh` starts `tailscaled` and `hermes serve` at boot and a watchdog restarts them every 60 seconds if they die, so this should be rare. It still happens in two cases: the image predates that autostart, or `TS_AUTHKEY` was never set **and** there is no `tailscaled` state on the volume yet, so the node was never registered.
 
-Open the web terminal (the `terminal` endpoint on port 7681) and run the following. The Tailscale binaries and `tailscaled.state` are on the block volume, so there is nothing to download and normally nothing to re-authenticate — the tailnet IP is stable across restarts.
+Check the boot log first — it says which step failed:
+
+```sql
+SELECT SYSTEM$GET_SERVICE_LOGS('<DATABASE>.<SCHEMA>.HERMES_SERVICE', 0, 'hermes', 400);
+```
+
+| Log line | Meaning |
+|---|---|
+| `nessuno stato Tailscale e TS_AUTHKEY assente — nodo non registrato` | Set the `TS_AUTHKEY` secret and restart the service |
+| `tailscaled non partito` | Check `/tmp/tailscaled.log` in the container |
+| `hermes serve non risponde` | The line includes the tail of `serve.log`; an **empty** `serve.log` means the build attempt (see traps below) |
+| No `tailnet IP` line at all | The image predates the autostart — run the manual sequence below |
+
+**No data is lost** in any of these cases: sessions and state are on the block volume. Only processes need to come back.
+
+To bring them up by hand, open the web terminal (the `terminal` endpoint on port 7681) and run:
 
 ```bash
-TSDIR=$(echo /root/tailscale/tailscale_*_amd64)
-TS="$TSDIR/tailscale --socket=/root/tailscale/sock"
+TS_SOCK=/root/tailscale/sock
 
 # 1. tailscaled. SPCS provides no /dev/net/tun and no NET_ADMIN, so
 #    userspace networking is mandatory, not a preference.
-"$TSDIR/tailscaled" --tun=userspace-networking \
-  --state=/root/tailscale/tailscaled.state \
-  --socket=/root/tailscale/sock &
+tailscaled --tun=userspace-networking \
+  --state=/root/tailscale/tailscaled.state --socket="$TS_SOCK" &
 
 # 2. Rejoin the tailnet. --accept-dns=false is deliberate: the container must
 #    keep resolving internal SPCS hosts and Snowflake, so its resolver must
-#    not be rewritten.
-$TS up --hostname hermes-spcs --accept-dns=false
-$TS ip -4        # the IP the Desktop points at
+#    not be rewritten. Add --authkey "$TS_AUTHKEY" only if there is no state yet.
+tailscale --socket="$TS_SOCK" up --hostname hermes-spcs --accept-dns=false
+tailscale --socket="$TS_SOCK" ip -4        # the IP the Desktop points at
 
-# 3. The backend. --skip-build is MANDATORY (see the note below).
+# 3. The backend. --skip-build is MANDATORY (see the traps below).
 nohup hermes serve --skip-build --host 0.0.0.0 --port 9119 > /root/serve.log 2>&1 &
 curl -s http://127.0.0.1:9119/api/status | python3 -m json.tool | grep -E 'auth_required|auth_providers'
 
 # 4. Expose 9119 on the tailnet.
-$TS serve --bg --tcp 9119 tcp://localhost:9119
-$TS serve status
+tailscale --socket="$TS_SOCK" serve --bg --tcp 9119 tcp://localhost:9119
 ```
 
-If `tailscale up` asks to authenticate, the state was lost and you need the reusable auth key: `$TS up --authkey "$TS_AUTHKEY" --hostname hermes-spcs --accept-dns=false`.
-
-Then reconnect from the Desktop. If the tailnet IP changed, update the Remote URL first.
+On an image older than the autostart, the Tailscale binaries are not in `/usr/local/bin` but under `/root/tailscale/tailscale_*_amd64/` — use those paths instead.
 
 ### Three traps in this procedure
 
 - **`--skip-build` is mandatory.** Without it `hermes serve` stays alive but **never starts listening**, and `serve.log` is **empty** — it is trying to build the web UI, and `web/dist` does not exist in the image. With the flag it listens within ~3 seconds. An empty `serve.log` is the signature of this mistake.
-- **`hermes serve --status` lies.** It reports `No hermes dashboard processes running` while the process is listening on `0.0.0.0:9119`. Never use it to decide whether the backend is up; poll `/api/status` instead.
+- **`hermes serve --status` lies.** It reports `No hermes dashboard processes running` while the process is listening on `0.0.0.0:9119`. Never use it to decide whether the backend is up; poll `/api/status` instead — which is what the watchdog does.
 - **Binding to `0.0.0.0` enables the auth gate by itself.** No extra flag is needed, and `--insecure` is a no-op. There is no Host restriction: a forged `Host` header still gets `101` on the WebSocket, so DNS-rebinding protection will not be what is blocking you.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `connection refused` on port 9119, but the service is `READY` | `tailscaled` and `hermes serve` are not started at boot | [After a container restart](#after-a-container-restart) |
+| `connection refused` on port 9119, but the service is `READY` | `tailscaled` or `hermes serve` did not come up, or the node was never registered | [If the backend is not up](#if-the-backend-is-not-up) |
 | `serve.log` is **empty** and nothing is listening | `--skip-build` is missing: it is building the web UI, which is absent from the image | Restart with `hermes serve --skip-build …` |
 | `hermes serve --status` says nothing is running, but the port answers | `--status` is unreliable | Ignore it; trust `curl /api/status` |
 | Desktop asks for a session token instead of showing Sign in | `basic` provider not active | Verify `HERMES_DASH_USERNAME` and `HERMES_DASH_PASSWORD_HASH` are set in `/root/.hermes/.env` |
@@ -133,4 +151,4 @@ With this topology, the client cannot wake a suspended service. Tailscale has no
 ALTER SERVICE <DATABASE>.<SCHEMA>.HERMES_SERVICE RESUME;
 ```
 
-Wait 3–4 minutes, then verify with the `curl` from Step 1. A resume recreates the container, so it is also a restart: follow [After a container restart](#after-a-container-restart) before expecting the Desktop to reconnect.
+Wait 3–4 minutes, then verify with the `curl` from Step 1. A resume recreates the container, so `tailscaled` and `hermes serve` start again from scratch — automatically, but not instantly. If the tailnet IP is unchanged the Desktop reconnects on its own; check the boot log if it does not.

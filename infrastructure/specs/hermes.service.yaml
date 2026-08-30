@@ -37,6 +37,10 @@ spec:
             objectName: "{{ database }}.{{ schema }}.TELEGRAM_HOME_CHANNEL"
           secretKeyRef: secret_string
           envVarName: TELEGRAM_HOME_CHANNEL
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.TS_AUTHKEY"
+          secretKeyRef: secret_string
+          envVarName: TS_AUTHKEY
       readinessProbe:
         port: 7681
         path: /

@@ -89,3 +89,11 @@ Create a key at https://login.tailscale.com/admin/settings/keys with:
 - **Tag: `tag:hermes-spcs`** recommended (tagged nodes have no expiring node key)
 
 Store the key as the `TS_AUTHKEY` Snowflake Secret.
+
+### When the key is actually used
+
+`start.sh` uses `TS_AUTHKEY` **only when there is no `tailscaled` state on the block volume yet** — in practice, the first boot after deployment. Afterwards the node rejoins from `/root/tailscale/tailscaled.state` and keeps the **same tailnet IP**, so clients never need reconfiguring. If the secret is empty and no state exists, the boot log says so explicitly and the Remote gateway stays unavailable; nothing else is affected.
+
+Tailscale does not issue non-expiring auth keys: the maximum lifetime is 90 days. That is not a problem while the state file survives, but if the volume is ever lost after the key has expired, re-registration needs a fresh key. Put the expiry date in a calendar rather than discovering it during an outage.
+
+The Tailscale binaries are pinned in the image via `ARG TAILSCALE_VERSION` and installed to `/usr/local/bin`, deliberately **outside `/root`**: the block volume mounted at `/root` would mask them, so a runtime download would have to be repeated on every container recreation. The state goes on the volume for the opposite reason — to keep the IP stable.

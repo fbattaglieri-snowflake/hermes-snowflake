@@ -30,6 +30,41 @@ RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && \
     esac && \
     echo "hermes installato in $HERMES_BIN"
 
+# Pin di versione. L'installer upstream clona HEAD e non espone alcun flag di
+# revisione (`hermes update` accetta solo --branch, non uno SHA), quindi senza
+# questo passo la build NON e' riproducibile: due build dello stesso commit di
+# questo repository possono contenere versioni diverse di Hermes, e un rebuild
+# fatto per una patch del proxy fa saltare l'agente a una versione arbitraria,
+# mescolando due cambiamenti in uno.
+#
+# Sovrascrivibile con --build-arg HERMES_GIT_SHA=<sha> per aggiornare Hermes in
+# modo esplicito e tracciabile.
+ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
+RUN set -eu; \
+    REPO=/usr/local/lib/hermes-agent; \
+    if ! git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1; then \
+        echo "ERRORE: $REPO non e' un repo git, pin impossibile" >&2; exit 1; \
+    fi; \
+    git -C "$REPO" fetch --quiet origin "$HERMES_GIT_SHA" \
+      || git -C "$REPO" fetch --quiet --unshallow origin \
+      || git -C "$REPO" fetch --quiet origin; \
+    git -C "$REPO" checkout --quiet --detach "$HERMES_GIT_SHA"; \
+    VENV_PY="$REPO/venv/bin/python"; \
+    UV="$(command -v uv || echo /root/.hermes/bin/uv)"; \
+    # L'installer risolve le dipendenze da uv.lock, non da requirements.txt:
+    # senza ri-sync il venv resterebbe quello di HEAD sopra il codice pinnato,
+    # cioe' esattamente la combinazione mai testata da nessuno.
+    if [ -f "$REPO/uv.lock" ]; then \
+        ( cd "$REPO" && VIRTUAL_ENV="$REPO/venv" "$UV" sync --frozen ); \
+    elif [ -f "$REPO/requirements.txt" ]; then \
+        "$VENV_PY" -m pip install -r "$REPO/requirements.txt" \
+          || "$UV" pip install --python "$VENV_PY" -r "$REPO/requirements.txt"; \
+    else \
+        echo "ERRORE: ne uv.lock ne requirements.txt in $REPO" >&2; exit 1; \
+    fi; \
+    hermes --version; \
+    echo "hermes pinnato a $HERMES_GIT_SHA"
+
 # python-telegram-bot: dipendenza di `hermes send --to telegram`, che senza di
 # essa esce con 1. L'installer di Hermes non la include.
 #

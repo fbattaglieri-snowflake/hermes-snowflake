@@ -191,11 +191,66 @@ def adapt_payload(payload):
         # Se il client ha già inviato la chiave nuova, la sua vince.
         body.setdefault("max_completion_tokens", value)
 
+    collapse_parallel_tool_calls(body)
+
     model = str(body.get("model") or "")
     if body.get("tools") and model in tools_need_no_reasoning():
         body["reasoning_effort"] = "none"
 
     return json.dumps(body).encode(), body
+
+
+def collapse_parallel_tool_calls(body):
+    """Collassa i turni con piu' di una tool call: Cortex li rifiuta.
+
+    Cortex converte ogni messaggio 'tool' in un turno separato, quindi una
+    assistant con N toolUse riceve 1 solo toolResult nel primo turno e la
+    richiesta muore con HTTP 400 "Each 'toolUse' block must be accompanied
+    with a matching 'toolResult' block", non ritentabile.
+
+    Il turno resta nella history persistita, quindi il guasto e' permanente:
+    ogni messaggio successivo della stessa sessione fallisce.
+
+    Teniamo la prima tool call e fondiamo gli output delle altre nel suo
+    toolResult come testo: il vincolo 1:1 e' rispettato e non si perde nulla.
+    """
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return False
+    out, changed, i = [], False, 0
+    while i < len(msgs):
+        m = msgs[i]
+        tcs = m.get("tool_calls") if isinstance(m, dict) else None
+        if not (isinstance(tcs, list) and len(tcs) > 1):
+            out.append(m)
+            i += 1
+            continue
+        ids = [str(tc.get("id") or "") for tc in tcs if isinstance(tc, dict)]
+        results, j = {}, i + 1
+        while j < len(msgs) and isinstance(msgs[j], dict) and msgs[j].get("role") == "tool":
+            results[str(msgs[j].get("tool_call_id") or "")] = msgs[j]
+            j += 1
+        if len(results) < 2:
+            out.append(m)
+            i += 1
+            continue
+        keep = dict(m)
+        keep["tool_calls"] = [tcs[0]]
+        first = results.get(ids[0]) or list(results.values())[0]
+        merged = dict(first)
+        extra = [str(results[k].get("content")) for k in ids[1:] if k in results]
+        if extra:
+            nota = "[output di tool call parallele, fusi dal proxy]"
+            merged["content"] = "\n\n".join(
+                [str(first.get("content")), nota] + extra
+            )
+        out.append(keep)
+        out.append(merged)
+        changed = True
+        i = j
+    if changed:
+        body["messages"] = out
+    return changed
 
 
 def force_no_reasoning(body):

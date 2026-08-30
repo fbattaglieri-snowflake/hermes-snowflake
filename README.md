@@ -6,7 +6,7 @@ Deploy [Hermes Agent](https://hermes-agent.nousresearch.com) (NousResearch) to S
 
 ## Why This Exists
 
-Hermes Agent speaks the OpenAI Chat Completions protocol. Snowflake Cortex exposes the same interface, but deviates from the specification in five ways that break standard OpenAI clients:
+Hermes Agent speaks the OpenAI Chat Completions protocol. Snowflake Cortex exposes the same interface, but deviates from the specification in six ways that break standard OpenAI clients:
 
 | # | Deviation | Symptom in Hermes |
 |---|---|---|

@@ -1,8 +1,8 @@
 # Motivation: Why the Cortex Proxy Is Required
 
-Hermes Agent uses the OpenAI Chat Completions API protocol. Snowflake Cortex exposes an endpoint that claims the same protocol (`/api/v2/cortex/v1/chat/completions`), but in practice deviates from the specification in five ways. Each deviation produces a misleading error that obscures the real cause.
+Hermes Agent uses the OpenAI Chat Completions API protocol. Snowflake Cortex exposes an endpoint that claims the same protocol (`/api/v2/cortex/v1/chat/completions`), but in practice deviates from the specification in six ways. Each deviation produces a misleading error that obscures the real cause.
 
-## The Five Deviations
+## The Six Deviations
 
 ### 1 — `max_tokens` is rejected
 
@@ -41,6 +41,19 @@ From inside SPCS, the Cortex endpoint requires:
 - `X-Snowflake-Authorization-Token-Type: OAUTH`
 
 Standard OpenAI clients, including Hermes, send only `Authorization: Bearer <api-key>`. The proxy replaces these headers on every request, reading the rotating service token from disk to avoid expiry.
+
+### 6 — Parallel tool calls in one turn are rejected
+
+The OpenAI protocol allows an assistant turn to carry several `tool_calls`, each answered by its own `tool` message. Cortex converts every `tool` message into a **separate turn**, so an assistant turn with N `toolUse` blocks is seen as having only 1 matching `toolResult`. The request fails with HTTP 400 `Each 'toolUse' block must be accompanied with a matching 'toolResult' block`.
+
+Two properties make this the worst of the six:
+
+- **It is not retryable.** No amount of retrying changes the shape of the request.
+- **It is permanent for the session.** The offending turn stays in the persisted history, so every subsequent message in that session fails too. The agent surfaces it as `The model provider failed after retries`, and the log labels it *transient*, which is wrong on both counts. The same agent works fine from the CLI only because that opens a different session.
+
+**Proxy fix:** `collapse_parallel_tool_calls()` keeps the first tool call and merges the other results into its `toolResult` as text. The 1:1 constraint is satisfied and no output is lost. The function is idempotent, so re-processing a history that was already collapsed is a no-op.
+
+A payload used to reproduce this **must include a `tools` array**. Without it Cortex returns a *different* 400 — `Requests with 'tool_use' and 'tool_result' blocks must include tool definition` — which is easily mistaken for a proxy failure.
 
 ## The Pattern
 

@@ -1,6 +1,6 @@
 # Cortex Proxy
 
-A minimal, dependency-free Python HTTP server that runs inside the Hermes container on `127.0.0.1:8080`. It resolves the five deviations between Snowflake Cortex and the OpenAI Chat Completions protocol documented in [docs/motivation.md](../docs/motivation.md).
+A minimal, dependency-free Python HTTP server that runs inside the Hermes container on `127.0.0.1:8080`. It resolves the six deviations between Snowflake Cortex and the OpenAI Chat Completions protocol documented in [docs/motivation.md](../docs/motivation.md).
 
 ## Routes
 

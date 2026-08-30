@@ -26,9 +26,46 @@ Wait 3–4 minutes for the container startup sequence to complete, then verify w
 
 ## After a Restart: Proxy Patch
 
-The `start.sh` in the current image copies `/opt/cortex_proxy.py` (the image's built-in copy) over `/root/.hermes/cortex_proxy.py` at every boot. If the image's proxy is older than the version in this repository, the block-volume copy will be silently overwritten.
+`start.sh` copies `/opt/cortex_proxy.py` (the image's built-in copy) over `/root/.hermes/cortex_proxy.py` at **every** boot, unconditionally. This is correct only as long as the image's proxy is the one from this repository.
 
-The correct long-term fix is to build a new image that includes the updated proxy. Until then, reapply the patch manually after each restart. The startup script can also be extended to detect the mtime divergence and skip the overwrite if the volume copy is newer.
+If you ever hot-patch `/root/.hermes/cortex_proxy.py` inside a running container, that change is **not lost but overwritten** at the next boot — and silently, because the proxy still starts and answers. Deleting `/opt/cortex_proxy.py` does not help: `/opt` lives in the image's ephemeral layer and returns on the next boot. The only durable fix is to build a new image.
+
+Symptom of a stale image: requests that contain parallel tool calls start failing again with HTTP 400 (deviation 6). Verify with:
+
+```bash
+grep -c collapse_parallel_tool_calls /opt/cortex_proxy.py /root/.hermes/cortex_proxy.py
+```
+
+Both must report a non-zero count and the same `md5sum`. If `/opt` reports 0, the deployed image predates the fix and must be rebuilt.
+
+## Gateway and Cron
+
+The gateway is started automatically by `start.sh` when `TELEGRAM_BOT_TOKEN` is set, after the proxy is confirmed up, and is kept alive by a 60-second watchdog. Confirm it with:
+
+```bash
+hermes cron status
+```
+
+Expect `✓ Gateway is running — cron jobs will fire automatically`. If it reports `⚠ Gateway is not running`, **no messaging platform is being listened to and no cronjob will fire** — the gateway process is both the platform listener and the cron ticker. This failure is silent: there is no error, only absence of replies. `hermes gateway install` requires systemd, which SPCS does not provide, so the gateway must run as a child process.
+
+### Cronjobs and inference-config drift
+
+A cronjob created while the global inference config pointed at one model is **skipped**, not run, if that config later changes and the job is unpinned:
+
+```text
+Skipped to prevent unintended spend: global inference config drifted since this job
+was created (model 'A' -> 'B'), and this job is unpinned.
+```
+
+This is a spend guard working as designed, not a defect. The alert is sent once and the job stays skipped until pinned:
+
+```bash
+hermes cron edit <job_id> --provider <provider> --model <model>
+```
+
+Pin **every** active job, not only the one that alerted: all jobs created before the change carry the same stale snapshot and will skip in turn as their schedules come due. Pinning clears the job's `model_snapshot`.
+
+To keep the default model declarative instead of living only in block-volume state, set `HERMES_MODEL` in the service spec. `hermes_configure.py` assigns `model.default` from it, so without it a config re-patch resets the default to the script's fallback.
 
 ## Viewing Logs
 

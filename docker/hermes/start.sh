@@ -178,6 +178,59 @@ else
     log "CF_TUNNEL_TOKEN assente — tunnel non avviato"
 fi
 
+# ---------------------------------------------------------------- Gateway
+# Il gateway non e' un accessorio: e' l'unico processo che ascolta le
+# piattaforme di messaggistica ED e' il ticker che fa scattare i cronjob
+# ("Gateway is not running — jobs won't fire automatically"). Se non viene
+# avviato al boot, ogni ricreazione del container lascia l'agente muto e i
+# cron fermi, in modo silenzioso: nessun errore, solo assenza di risposte.
+# `hermes gateway install` vuole systemd, che in SPCS non c'e': va lanciato
+# come processo figlio.
+gateway_up() {
+    pgrep -f "hermes gateway run" > /dev/null 2>&1
+}
+
+start_gateway() {
+    # --replace: se un'istanza precedente ha lasciato il lock, la sostituisce
+    # invece di uscire con errore.
+    setsid nohup hermes gateway run --replace \
+        >> "${HERMES_DIR}/logs/gateway.log" 2>&1 < /dev/null &
+}
+
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && command -v hermes > /dev/null 2>&1; then
+    mkdir -p "${HERMES_DIR}/logs"
+    # Il gateway apre sessioni agente al primo messaggio: senza proxy pronto
+    # fallirebbe la prima inferenza, quindi lo si avvia dopo di lui.
+    if proxy_up; then
+        start_gateway
+        for _ in $(seq 1 30); do
+            gateway_up && break
+            sleep 1
+        done
+        if gateway_up; then
+            log "gateway avviato (messaggistica + ticker cron)"
+        else
+            log "WARN: gateway non partito — nessuna risposta e cron fermi"
+        fi
+
+        # Watchdog, per lo stesso motivo del proxy: il guasto e' silenzioso.
+        (
+            while true; do
+                sleep 60
+                if ! gateway_up; then
+                    log "WARN: gateway non attivo — riavvio"
+                    start_gateway
+                    sleep 10
+                fi
+            done
+        ) &
+    else
+        log "WARN: proxy non pronto — gateway non avviato"
+    fi
+else
+    log "TELEGRAM_BOT_TOKEN assente — gateway non avviato"
+fi
+
 # ---------------------------------------------------------------- .bashrc
 if ! grep -q "hermes-spcs-env v2" /root/.bashrc 2>/dev/null; then
 cat >> /root/.bashrc << BEOF

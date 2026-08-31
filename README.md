@@ -26,18 +26,18 @@ Hermes Desktop (any PC with Tailscale)
     │   Remote gateway  http://<tailnet-ip>:9119
     │   Auth: cookie / basic gate
     ▼
-Tailscale DERP relay (Frankfurt, ~3 ms from eu-central-1)
+Tailscale DERP relay (TCP/443, node closest to your region)
     ▼
-Container — SPCS (Hermes CPU pool, block storage on /root)
+Container — SPCS (CPU compute pool, block storage on /root)
     ├── hermes serve --skip-build --host 0.0.0.0 --port 9119
-    ├── cortex_proxy.py  127.0.0.1:8080  ← fixes the 5 Cortex deviations
+    ├── cortex_proxy.py  127.0.0.1:8080  ← fixes the 6 Cortex deviations
     ├── tailscaled  (userspace networking, QUIC disabled by SPCS)
     ├── ttyd :7681  (web terminal, readiness probe target)
     ├── cloudflared  (fallback tunnel)
     └── sshd :22  (fallback access)
          │
          └─▶  Cortex AI Gateway  (/api/v2/cortex/v1/chat/completions)
-                                  27 verified models
+                                  models verified per account
 ```
 
 **Why Tailscale and not the public ingress?** Snowflake ingress consumes the `Authorization` header and requires a Snowflake PAT. Hermes Desktop sends a WebSocket upgrade that the ingress cannot handle. Tailscale bypasses the ingress entirely using DERP relay TCP on port 443, which passes through SPCS external access integrations.
@@ -46,7 +46,7 @@ Container — SPCS (Hermes CPU pool, block storage on /root)
 
 - Reproducible `linux/amd64` container image that installs Hermes via the official upstream installer.
 - `cortex_proxy.py` — production-tested Cortex compatibility layer with watchdog.
-- `models.json` — catalog of 27 verified Cortex models with context windows, tool-calling constraints, and known-unavailable entries.
+- `models.json` — catalog of verified Cortex models with context windows, tool-calling constraints, and known-unavailable entries.
 - `cortex_model_gate.py` — verifies a new model against the full proxy+upstream stack before promoting it to configuration.
 - `refresh_cortex_models.py` — reads the Snowflake model catalog, tests every entry with a real call, and rewrites `models.json`.
 - Parameterized SPCS service specification with block storage and Snowflake Secrets injection.
@@ -56,9 +56,13 @@ Container — SPCS (Hermes CPU pool, block storage on /root)
 ## Prerequisites
 
 - A Snowflake account with Snowpark Container Services enabled.
+- Cortex AI available in your account's region, with at least one chat model you can call. **Verify this first**: model availability and the set of usable names differ by cloud (AWS, Azure, GCP), by region, and with the `CORTEX_ENABLED_CROSS_REGION` setting. Nothing else in this repository works without it.
+- A compute pool instance family available on your cloud. Family names are **not** portable between clouds — check `SHOW COMPUTE POOLS` and the Snowflake documentation for your platform rather than copying the example value.
 - A Tailscale account (free plan is sufficient; one tailnet shared between the container and all client machines).
 - Docker or another OCI-compatible builder capable of producing `linux/amd64` images.
 - A public GitHub repository with Actions enabled.
+
+> Developed and exercised on Snowflake on AWS. Nothing in the design is AWS-specific, but the deployment has not been run on Azure or GCP, where SPCS and Cortex feature parity may differ. Treat the instance family, the model catalog, and Cortex availability as the three things to verify on your own platform.
 
 ## Deployment Flow
 

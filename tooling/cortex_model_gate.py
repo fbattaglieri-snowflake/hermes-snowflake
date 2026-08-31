@@ -6,11 +6,11 @@ Perche' non basta refresh_cortex_models.py
 -----------------------------------------
 Quello script risponde a tre domande (il modello risponde? accetta 'tools'? vuole
 reasoning_effort="none"?) e su quella base riscrive cortex_models.json. Sono
-condizioni necessarie ma non sufficienti: lo stack si regge su cinque scostamenti
+condizioni necessarie ma non sufficienti: lo stack si regge su sei scostamenti
 del wire Cortex normalizzati da cortex_proxy.py, e un modello nuovo puo' romperne
 uno senza fallire nessuno dei tre controlli. Il caso reale: i modelli Claude
 rispondono 200 al primo probe ma non valorizzano finish_reason, e con due tool
-call in un turno avvelenano la history in modo permanente (R-19) — un guasto che
+call in un turno avvelenano la history in modo permanente — un guasto che
 si e' manifestato come "Telegram risponde solo 'model provider failed'".
 
 Questo script testa quindi la COPPIA proxy+upstream, non il gateway nudo:
@@ -68,10 +68,10 @@ except Exception as err:                                   # pragma: no cover
     sys.exit("cortex_proxy.py non importabile (%s): il gate deve girare "
              "nella stessa directory" % err)
 
-# La patch R-19 (tool call parallele) e' stata applicata a caldo nel container e
-# vive in /root/hermes-pin/cortex_proxy.patched.py: NON e' in questo sorgente.
-# Il gate non finge che ci sia — lo dichiara, perche' una v11 costruita da qui
-# reintrodurrebbe il guasto.
+# collapse_parallel_tool_calls() e' parte di cortex_proxy.py. La lookup resta
+# difensiva perche' il gate puo' essere puntato a un proxy piu' vecchio della
+# patch: in quel caso T5 non e' verificabile e il gate lo dichiara, invece di
+# far passare per compatibile un modello mai testato su quel vincolo.
 COLLAPSE = getattr(cortex_proxy, "collapse_parallel_tool_calls", None)
 
 TOOL = {
@@ -385,8 +385,8 @@ def t5_tool_parallele(host, pat, model, esito):
     if COLLAPSE is None:
         esito["T5"] = "NON VERIFICABILE"
         esito["note"].append(
-            "collapse_parallel_tool_calls assente da cortex_proxy.py: la patch "
-            "R-19 vive solo nel container (/root/hermes-pin/cortex_proxy.patched.py)")
+            "collapse_parallel_tool_calls assente da cortex_proxy.py: il proxy "
+            "e' piu' vecchio della patch sulle tool call parallele")
         return
 
     fuso = COLLAPSE(dict(body))
@@ -588,8 +588,9 @@ def main():
             print("in configurazione ma NON piu' nel catalogo: %s" % ", ".join(spariti))
     if COLLAPSE is None:
         print("\nATTENZIONE: collapse_parallel_tool_calls non e' in cortex_proxy.py.")
-        print("La patch R-19 vive solo nel container. T5 non e' verificabile da qui,")
-        print("e una rebuild dell'immagine da questo contesto riporterebbe il guasto.")
+        print("Il proxy e' piu' vecchio della patch sulle tool call parallele: T5")
+        print("non e' verificabile, e un'immagine costruita da questo contesto")
+        print("reintrodurrebbe il guasto.")
 
     if not bersagli:
         print("\nnessun modello da valutare.")

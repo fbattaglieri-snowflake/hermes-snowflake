@@ -25,22 +25,17 @@
     "agents that depend on tool calling cannot use models in 'tools_unsupported'. '_legacy'",
     "lists models with a known EOL date."
   ],
-
   "models": {
     "claude-opus-4-5": 200000,
     "claude-opus-4-6": 1000000,
     "claude-opus-4-7": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-5": 1000000,
-
     "claude-sonnet-4-5": 200000,
     "claude-sonnet-4-6": 1000000,
     "claude-sonnet-5": 1000000,
-
     "claude-haiku-4-5": 200000,
-
     "claude-4-sonnet": 200000,
-
     "openai-gpt-4.1": 128000,
     "openai-gpt-5": 272000,
     "openai-gpt-5-mini": 272000,
@@ -54,27 +49,22 @@
     "openai-gpt-5.6-luna": 400000,
     "openai-gpt-5.6-sol": 400000,
     "openai-gpt-5.6-terra": 400000,
-
     "mistral-7b": 32000,
     "mistral-large2": 128000,
-
     "llama3.1-70b": 128000,
     "llama3.1-8b": 128000
   },
-
   "tools_require_reasoning_effort_none": [
     "openai-gpt-5.6-luna",
     "openai-gpt-5.6-sol",
     "openai-gpt-5.6-terra"
   ],
-
   "tools_unsupported": [
     "llama3.1-70b",
     "llama3.1-8b",
     "mistral-7b",
     "mistral-large2"
   ],
-
   "_note_tools_reasoning": [
     "Questi modelli rifiutano una richiesta con 'tools' se reasoning_effort non e'",
     "esplicitamente \"none\": HTTP 400 'Function tools with reasoning_effort are not",
@@ -92,15 +82,14 @@
     "",
     "claude-* e openai-gpt-5.4 accettano tools e reasoning_effort insieme senza problemi."
   ],
-
   "_note_context": [
     "openai-gpt-5.2, openai-gpt-5.4 e openai-gpt-5.5 non sono nella tabella dei limiti",
     "della documentazione: dichiarati a 272000 per prudenza. Sottostimare il context e'",
     "sicuro (Hermes comprime prima del necessario); sovrastimarlo produce errori upstream.",
     "",
     "openai-gpt-5.5 e' in Private Preview (PRPR) e openai-gpt-5.4 in Public Preview:",
-    "possono cambiare o sparire senza preavviso. openai-gpt-5.5 funziona su Frankfurt ma",
-    "NON sull'account Azure NL (403, non abilitato).",
+    "possono cambiare o sparire senza preavviso. La disponibilita' dei preview",
+    "varia per account, cloud e regione: verificare sempre sul proprio account.",
     "",
     "openai-gpt-4.1 e' LEGACY: legacy dal 2026-08-12, EOL 2026-10-14. Sparira' presto.",
     "",
@@ -112,10 +101,9 @@
     "e hanno accettato un input di 450008 token (finish_reason stop) — quindi la finestra e'",
     "piu' grande del resto della famiglia gpt-5. Dichiarati 400000 per prudenza.",
     "Lifecycle NULL nel catalogo: non ancora rilasciati ufficialmente, possono sparire.",
-    "Disponibili SOLO su Frankfurt: sull'account Azure NL il gateway li rimappa su",
-    "openai-gpt-5.6-<nome>-global, che risulta 'unavailable'."
+    "Disponibilita' non uniforme: su alcuni account/regioni il gateway li rimappa su",
+    "openai-gpt-5.6-<nome>-global, che risulta 'unavailable'. Verificare col gate."
   ],
-
   "_legacy": {
     "claude-4-sonnet": "2026-10-14",
     "llama3.1-70b": "No sooner than 2026-10-14",
@@ -123,7 +111,6 @@
     "mistral-large2": "No sooner than 2026-10-14",
     "openai-gpt-4.1": "2026-10-14"
   },
-
   "_non_disponibili": {
     "_commento": "Models tested and NOT working (unknown or unavailable). Do not add them back without re-testing.",
     "codestral-22b": "unknown model",

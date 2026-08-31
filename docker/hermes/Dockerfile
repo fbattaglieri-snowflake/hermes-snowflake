@@ -16,6 +16,27 @@ RUN curl -fsSL https://ollama.com/install.sh | sh
 RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
     -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared
 
+# Tailscale, per il Remote gateway del Desktop.
+#
+# Va nell'immagine e NON sotto /root: il volume block montato su /root
+# mascherebbe i binari, quindi un download a runtime andrebbe rifatto a ogni
+# ricreazione del container. Lo *stato* invece deve stare sul volume, altrimenti
+# il nodo si re-registra a ogni boot e l'IP del tailnet cambia, obbligando a
+# riconfigurare ogni client (vedi start.sh).
+#
+# Versione pinnata per lo stesso motivo del pin di Hermes: una build non
+# riproducibile trasforma un rebuild fatto per altro in un aggiornamento di
+# Tailscale non richiesto.
+ARG TAILSCALE_VERSION=1.102.3
+RUN set -eu; \
+    curl -fsSL -o /tmp/ts.tgz \
+      "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz"; \
+    tar xzf /tmp/ts.tgz -C /tmp; \
+    install -m 0755 "/tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled" /usr/local/bin/tailscaled; \
+    install -m 0755 "/tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscale" /usr/local/bin/tailscale; \
+    rm -rf /tmp/ts.tgz "/tmp/tailscale_${TAILSCALE_VERSION}_amd64"; \
+    tailscaled --version | head -1
+
 # Installa pacchetti Python
 RUN pip3 install --break-system-packages openai anthropic requests httpx PyJWT cryptography
 

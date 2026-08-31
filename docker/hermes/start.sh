@@ -338,6 +338,117 @@ if [ "${HERMES_SELFTEST:-1}" = "1" ] && command -v hermes > /dev/null 2>&1; then
     ) &
 fi
 
+# ------------------------------------------------- Tailscale + backend Desktop
+# Il Desktop si collega in modalita' "Remote gateway" a `hermes serve` sulla
+# 9119, raggiunta via tailnet. Nessuno dei due processi era avviato al boot,
+# quindi ogni ricreazione del container lasciava il client offline mentre il
+# servizio riportava READY.
+#
+# ttyd resta l'exec finale in foreground e NON va toccato: se Tailscale o
+# `hermes serve` si rompono, il web terminal e' l'unico canale di recupero.
+TS_DIR=/root/tailscale
+TS_SOCK="${TS_DIR}/sock"
+TS_STATE="${TS_DIR}/tailscaled.state"
+SERVE_PORT=9119
+SERVE_BASE="http://127.0.0.1:${SERVE_PORT}"
+
+tailscaled_up() {
+    pgrep -x tailscaled > /dev/null 2>&1
+}
+
+serve_up() {
+    # `hermes serve --status` e' inaffidabile: riporta "No hermes dashboard
+    # processes running" mentre il processo e' in ascolto. Si interroga la porta.
+    curl -fsS -o /dev/null -m 5 "${SERVE_BASE}/api/status" 2>/dev/null
+}
+
+start_tailscaled() {
+    # SPCS non espone /dev/net/tun e non concede NET_ADMIN: userspace networking
+    # e' obbligatorio, non una preferenza.
+    nohup tailscaled --tun=userspace-networking \
+        --state="$TS_STATE" --socket="$TS_SOCK" \
+        >> /tmp/tailscaled.log 2>&1 &
+}
+
+start_serve() {
+    # --skip-build e' OBBLIGATORIO: senza, il processo resta vivo ma non si mette
+    # mai in ascolto e serve.log resta vuoto, perche' tenta la build della web UI
+    # che nell'immagine non esiste. Il bind su 0.0.0.0 attiva da solo il gate di
+    # autenticazione.
+    nohup hermes serve --skip-build --host 0.0.0.0 --port "$SERVE_PORT" \
+        >> /root/serve.log 2>&1 &
+}
+
+if command -v tailscaled > /dev/null 2>&1; then
+    mkdir -p "$TS_DIR"
+    start_tailscaled
+    for _ in $(seq 1 20); do
+        tailscaled_up && break
+        sleep 1
+    done
+
+    if tailscaled_up; then
+        # Con lo stato sul volume il nodo si riaggancia senza authkey e conserva
+        # lo stesso IP: la key serve solo al primo avvio, o se lo stato si perde.
+        # --accept-dns=false e' deliberato: il resolver del container non va
+        # riscritto, deve continuare a risolvere gli host interni SPCS.
+        if [ -s "$TS_STATE" ]; then
+            tailscale --socket="$TS_SOCK" up \
+                --hostname hermes-spcs --accept-dns=false \
+                >> /tmp/tailscaled.log 2>&1 || \
+                log "WARN: tailscale up fallito con lo stato esistente"
+        elif [ -n "${TS_AUTHKEY:-}" ]; then
+            tailscale --socket="$TS_SOCK" up --authkey "$TS_AUTHKEY" \
+                --hostname hermes-spcs --accept-dns=false \
+                >> /tmp/tailscaled.log 2>&1 || \
+                log "WARN: tailscale up fallito con l'authkey"
+        else
+            log "WARN: nessuno stato Tailscale e TS_AUTHKEY assente — nodo non registrato"
+        fi
+
+        TS_IP="$(tailscale --socket="$TS_SOCK" ip -4 2>/dev/null | head -1)"
+        # L'IP va loggato: i log della readinessProbe lo rendono irrecuperabile
+        # dopo circa mezz'ora, e serve per configurare i client.
+        log "tailnet IP: ${TS_IP:-non assegnato}"
+
+        if [ -n "$TS_IP" ]; then
+            start_serve
+            for _ in $(seq 1 30); do
+                serve_up && break
+                sleep 1
+            done
+            if serve_up; then
+                log "hermes serve pronto su ${TS_IP}:${SERVE_PORT} (Remote gateway del Desktop)"
+                tailscale --socket="$TS_SOCK" serve --bg --tcp "$SERVE_PORT" \
+                    "tcp://localhost:${SERVE_PORT}" >> /tmp/tailscaled.log 2>&1 || \
+                    log "WARN: tailscale serve non configurato"
+            else
+                log "WARN: hermes serve non risponde — serve.log: $(tail -c 200 /root/serve.log 2>/dev/null | tr '\n' ' ')"
+            fi
+
+            # Watchdog: come per il proxy e il gateway, il guasto e' silenzioso —
+            # il Desktop si limita a non collegarsi piu'.
+            (
+                while true; do
+                    sleep 60
+                    tailscaled_up || start_tailscaled
+                    if ! serve_up; then
+                        log "WARN: hermes serve non risponde — riavvio"
+                        start_serve
+                        sleep 10
+                    fi
+                done
+            ) &
+        else
+            log "WARN: nessun IP tailnet — hermes serve non avviato"
+        fi
+    else
+        log "WARN: tailscaled non partito — Remote gateway non disponibile"
+    fi
+else
+    log "tailscaled assente dall'immagine — Remote gateway non disponibile"
+fi
+
 log "pronto — provider=${ACTIVE_PROVIDER} model=${DEFAULT_MODEL}; web terminal su :7681"
 
 exec ttyd --port 7681 --writable bash -l

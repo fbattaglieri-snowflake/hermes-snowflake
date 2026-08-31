@@ -72,6 +72,17 @@ CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.TELEGRAM_HOME_CHANNEL
   SECRET_STRING = ''
   COMMENT = 'Telegram home channel ID (chat_id). Required when bot token is set.';
 
+-- Tailscale: optional; enables the Desktop Remote gateway on port 9119.
+-- Must be a REUSABLE, NON-EPHEMERAL auth key: a single-use key works on the
+-- first boot only, and an ephemeral one makes Tailscale drop the node when it
+-- goes offline, changing the tailnet IP on every restart. Needed only until
+-- tailscaled state exists on the block volume, after which the node rejoins on
+-- its own and keeps the same IP.
+CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.TS_AUTHKEY
+  TYPE = GENERIC_STRING
+  SECRET_STRING = ''
+  COMMENT = 'Tailscale reusable auth key (tskey-auth-...). Leave empty to disable the Desktop Remote gateway.';
+
 GRANT USAGE ON DATABASE <% database %> TO ROLE <% deploy_role %>;
 GRANT USAGE ON SCHEMA <% database %>.<% schema %> TO ROLE <% deploy_role %>;
 GRANT USAGE ON WAREHOUSE <% warehouse %> TO ROLE <% deploy_role %>;

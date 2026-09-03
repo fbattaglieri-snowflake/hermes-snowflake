@@ -12,9 +12,11 @@ RUN apt-get update && apt-get install -y \
 # Installa Ollama CLI
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
-# Installa cloudflared
-RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-    -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared
+# Installa cloudflared (pinned version for reproducible builds)
+ARG CLOUDFLARED_VERSION=2026.8.3
+RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+    -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared && \
+    cloudflared --version
 
 # Tailscale, per il Remote gateway del Desktop.
 #
@@ -38,7 +40,13 @@ RUN set -eu; \
     tailscaled --version | head -1
 
 # Installa pacchetti Python
-RUN pip3 install --break-system-packages openai anthropic requests httpx PyJWT cryptography
+RUN pip3 install --break-system-packages --ignore-installed \
+    openai==3.7.0 \
+    anthropic==1.3.0 \
+    requests==2.33.0 \
+    httpx==0.28.1 \
+    PyJWT==2.13.0 \
+    cryptography==50.0.1
 
 # Installa Hermes Agent (nell'immagine — non richiede reinstall ad ogni restart).
 # Il volume block viene montato su /root a runtime: qualsiasi cosa installata sotto

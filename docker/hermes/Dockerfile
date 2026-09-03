@@ -40,7 +40,7 @@ RUN set -eu; \
     tailscaled --version | head -1
 
 # Installa pacchetti Python
-RUN pip3 install --break-system-packages \
+RUN pip3 install --break-system-packages --ignore-installed \
     openai==3.7.0 \
     anthropic==1.3.0 \
     requests==2.33.0 \

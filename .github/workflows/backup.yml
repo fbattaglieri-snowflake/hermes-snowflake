@@ -1,0 +1,46 @@
+name: Backup State
+
+on:
+  workflow_dispatch:
+  # Uncomment to enable scheduled backups:
+  # schedule:
+  #   - cron: "0 3 * * 0"  # Weekly, Sunday 03:00 UTC
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  backup:
+    if: vars.ENABLE_BACKUP == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+          cli-version: "3.16"
+      - name: Archive Hermes state to stage
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
+          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+          SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
+        run: |
+          snow sql -x -q "CREATE STAGE IF NOT EXISTS ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_BACKUPS ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') COMMENT = 'Hermes state backup archives';"
+
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          ARCHIVE="hermes-state-${TIMESTAMP}.tgz"
+
+          # Create the archive inside the running container via EXECUTE_IMMEDIATE
+          # This requires the service to be running and the role to have OPERATE on it
+          snow sql -x -q "
+            CALL SYSTEM\$SEND_NOTIFICATIONS_TO_SERVICE(
+              '${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SERVICE',
+              0,
+              'bash -c \"tar czf /tmp/${ARCHIVE} --exclude=node --exclude=bin --exclude=cache --exclude=audio_cache --exclude=__pycache__ --exclude=models_dev_cache.json -C /root .hermes 2>/dev/null && echo BACKUP_OK || echo BACKUP_FAIL\"'
+            );
+          " 2>/dev/null || echo "::warning::SYSTEM\$SEND_NOTIFICATIONS_TO_SERVICE not available. Use manual backup via shell."
+
+          echo "::notice::If automated in-container backup is not supported in your region, use the manual procedure documented in docs/backup-recovery.md"

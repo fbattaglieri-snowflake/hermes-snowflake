@@ -87,3 +87,10 @@ SELECT SYSTEM$GET_SERVICE_LOGS('<DATABASE>.<SCHEMA>.HERMES_SERVICE', 0, 'hermes'
 ```
 
 **Important**: the `readinessProbe` on port 7681 (`ttyd`) generates a log line every 5 seconds. With a tail of 400, startup messages from more than ~30 minutes ago are no longer reachable. Log the tailnet IP and proxy status periodically to a file on the block volume if you need to retrieve them later without opening the web terminal.
+
+
+## Backup
+
+An optional **Backup State** GitHub Action archives Hermes state from the block volume to a Snowflake internal stage. See [backup-recovery.md](backup-recovery.md) for setup, manual backup procedures, and recovery scenarios.
+
+**Critical**: never `DROP SERVICE` without first backing up the block volume. The volume and all accumulated state (sessions, memory, skills, cronjobs) are destroyed when the service is dropped.

@@ -49,12 +49,12 @@ DEFAULT_CONTEXT = 128000
 
 REASONING_TOOLS_ERROR = "function tools with reasoning_effort"
 
-# Ordine delle famiglie nel file riscritto: tenerlo stabile rende i diff leggibili.
+# Family order in the rewritten file: keeping it stable makes diffs readable.
 FAMILY_ORDER = ["claude-opus", "claude-sonnet", "claude-haiku", "claude-4",
                 "openai-gpt", "mistral", "llama", "snowflake"]
 
-# Un tool banale ma valido: serve solo a far scattare (o no) il vincolo
-# tools + reasoning_effort. Non ci interessa la risposta del modello.
+# A trivial but valid tool: it only serves to trigger (or not) the
+# tools + reasoning_effort constraint. We do not care about the model's answer.
 PROBE_TOOL = {
     "type": "function",
     "function": {
@@ -66,7 +66,7 @@ PROBE_TOOL = {
 
 
 def die(msg):
-    sys.stderr.write("errore: %s\n" % msg)
+    sys.stderr.write("error: %s\n" % msg)
     sys.exit(1)
 
 
@@ -76,21 +76,21 @@ def read_pat(args):
             return fh.read().strip()
     pat = os.environ.get("CORTEX_PAT", "").strip()
     if not pat:
-        die("serve il PAT: esporta CORTEX_PAT oppure passa --pat-file")
+        die("the PAT is required: export CORTEX_PAT or pass --pat-file")
     return pat
 
 
 def catalog_lifecycle(connection):
-    """{nome: {status, eol}} dal catalogo, piu' le varianti plausibili del nome.
+    """{name: {status, eol}} from the catalog, plus the plausible name variants.
 
-    Il catalogo usa il maiuscolo e per i modelli first-party inserisce un segmento
-    '1p-' che NON fa parte del nome invocabile: OPENAI-1P-GPT-5.6-LUNA si chiama
-    openai-gpt-5.6-luna sul gateway. Registriamo entrambe le forme e lasciamo
-    decidere alla chiamata reale quale delle due risponde.
+    The catalog uses uppercase and for first-party models inserts a
+    '1p-' segment that is NOT part of the invocable name: OPENAI-1P-GPT-5.6-LUNA is called
+    openai-gpt-5.6-luna on the gateway. We register both forms and let
+    the real call decide which of the two responds.
 
-    lifecycle_status/eol_date servono a segnalare i modelli LEGACY: rispondono oggi
-    ma spariscono a una data nota, e metterli in config senza avvisare significa
-    ritrovarsi con un provider rotto il giorno dell'EOL.
+    lifecycle_status/eol_date serve to flag LEGACY models: they respond today
+    but disappear on a known date, and putting them in config without warning means
+    ending up with a broken provider on the day of the EOL.
     """
     out = subprocess.run(
         ["snow", "sql", "-c", connection, "--format", "json",
@@ -98,13 +98,13 @@ def catalog_lifecycle(connection):
         capture_output=True, text=True,
     )
     if out.returncode != 0:
-        die("SHOW CORTEX BASE MODELS ha fallito:\n%s" % (out.stderr or out.stdout))
+        die("SHOW CORTEX BASE MODELS failed:\n%s" % (out.stderr or out.stdout))
 
     try:
         rows = json.loads(out.stdout)
     except json.JSONDecodeError:
-        die("output di snow sql non interpretabile come JSON:\n%s" % out.stdout[:500])
-    if rows and isinstance(rows[0], list):   # snow sql annida per statement
+        die("snow sql output could not be parsed as JSON:\n%s" % out.stdout[:500])
+    if rows and isinstance(rows[0], list):   # snow sql nests per statement
         rows = rows[0]
 
     lifecycle = {}
@@ -125,7 +125,7 @@ def catalog_lifecycle(connection):
 
 
 def call_gateway(host, pat, payload, timeout=90):
-    """(status, body_text). Non solleva su 4xx/5xx: lo stato ci serve."""
+    """(status, body_text). Does not raise on 4xx/5xx: we need the status."""
     req = urllib.request.Request(
         "https://%s/api/v2/cortex/v1/chat/completions" % host,
         data=json.dumps(payload).encode(),
@@ -141,12 +141,12 @@ def call_gateway(host, pat, payload, timeout=90):
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")
-    except Exception as exc:                              # rete, DNS, timeout
-        return 0, "eccezione locale: %s" % exc
+    except Exception as exc:                              # network, DNS, timeout
+        return 0, "local exception: %s" % exc
 
 
 def short_reason(status, body):
-    """Riduce il corpo dell'errore a una riga da mettere in _non_disponibili."""
+    """Reduces the error body to a single line to put in _unavailable."""
     text = body.strip()
     try:
         parsed = json.loads(text)
@@ -155,7 +155,7 @@ def short_reason(status, body):
         pass
     text = " ".join(text.split())
     if status == 403:
-        return "HTTP 403 - account non autorizzato"
+        return "HTTP 403 - account not authorized"
     if "unknown model" in text.lower():
         return "unknown model"
     if "unavailable" in text.lower():
@@ -164,12 +164,12 @@ def short_reason(status, body):
 
 
 def probe(host, pat, model):
-    """Ritorna dict con esito del modello.
+    """Returns a dict with the model's outcome.
 
-    Due chiamate: la prima stabilisce se il modello risponde, la seconda (solo se la
-    prima e' andata) se il tool calling richiede reasoning_effort="none".
-    Nota: si usa max_completion_tokens, non max_tokens — il gateway rifiuta
-    max_tokens per tutte le famiglie, ed e' esattamente cio' che il proxy riscrive.
+    Two calls: the first establishes whether the model responds, the second (only if the
+    first succeeded) whether tool calling requires reasoning_effort="none".
+    Note: max_completion_tokens is used, not max_tokens — the gateway rejects
+    max_tokens for every family, and that is exactly what the proxy rewrites.
     """
     base = {
         "model": model,
@@ -187,14 +187,14 @@ def probe(host, pat, model):
     if status == 200:
         return result
     if REASONING_TOOLS_ERROR in body.lower():
-        # Riprova forzando "none": se passa, il modello va nella lista dei vincolati.
+        # Retry forcing "none": if it passes, the model goes in the constrained list.
         status, _ = call_gateway(host, pat, dict(with_tools, reasoning_effort="none"))
         result["needs_reasoning_none"] = status == 200
         if status != 200:
-            result["tools_note"] = "tools rifiutati anche con reasoning_effort=none"
+            result["tools_note"] = "tools rejected even with reasoning_effort=none"
         return result
 
-    # Tools rifiutati per altri motivi: il modello resta usabile per il testo.
+    # Tools rejected for other reasons: the model remains usable for text.
     result["tools_note"] = short_reason(status, body)
     return result
 
@@ -206,11 +206,27 @@ def family_key(name):
     return (len(FAMILY_ORDER), name)
 
 
-def render(doc):
-    """Serializza a mano per conservare il raggruppamento per famiglia.
+# The comment keys used to be Italian ("_commento", "_non_disponibili"). A copy
+# already uploaded to the stage still carries the old names, so a run pointed at
+# it via CORTEX_MODELS_PATH would fail on a missing key. Accept both on read; the
+# file is always rewritten with the current names.
+LEGACY_KEYS = {"_commento": "_comment", "_non_disponibili": "_unavailable"}
 
-    json.dump appiattirebbe tutto in un blocco unico: con 25+ modelli il file
-    diventa illeggibile e i diff inutili. Le chiavi '_'-prefissate sono commenti.
+
+def normalize_legacy_keys(doc):
+    for old, new in LEGACY_KEYS.items():
+        if old in doc and new not in doc:
+            doc[new] = doc.pop(old)
+    unavailable = doc.get("_unavailable")
+    if isinstance(unavailable, dict) and "_commento" in unavailable:
+        unavailable.setdefault("_comment", unavailable.pop("_commento"))
+
+
+def render(doc):
+    """Serializes by hand to preserve the grouping by family.
+
+    json.dump would flatten everything into a single block: with 25+ models the file
+    becomes unreadable and the diffs useless. The '_'-prefixed keys are comments.
     """
     def dumps(value, indent):
         text = json.dumps(value, indent=2, ensure_ascii=False)
@@ -218,7 +234,7 @@ def render(doc):
         return text.replace("\n", "\n" + pad)
 
     lines = ["{"]
-    lines.append('  "_commento": %s,' % dumps(doc["_commento"], 2))
+    lines.append('  "_comment": %s,' % dumps(doc["_comment"], 2))
     lines.append("")
     lines.append('  "models": {')
 
@@ -226,11 +242,11 @@ def render(doc):
     for name in sorted(doc["models"], key=family_key):
         family = family_key(name)[0]
         if previous is not None and family != previous:
-            entries.append("")                         # riga vuota fra famiglie
+            entries.append("")                         # blank line between families
         entries.append('    "%s": %d,' % (name, doc["models"][name]))
         previous = family
     if entries:
-        entries[-1] = entries[-1].rstrip(",")          # niente virgola sull'ultimo
+        entries[-1] = entries[-1].rstrip(",")          # no comma on the last one
     lines.extend(entries)
 
     lines.append("  },")
@@ -252,7 +268,7 @@ def render(doc):
         lines.append('  "_legacy": %s,' % dumps(doc["_legacy"], 2))
 
     lines.append("")
-    lines.append('  "_non_disponibili": %s' % dumps(doc["_non_disponibili"], 2))
+    lines.append('  "_unavailable": %s' % dumps(doc["_unavailable"], 2))
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -263,7 +279,7 @@ def upload(connection, stage):
         capture_output=True, text=True,
     )
     if out.returncode != 0:
-        die("upload sullo stage ha fallito:\n%s" % (out.stderr or out.stdout))
+        die("upload to the stage failed:\n%s" % (out.stderr or out.stdout))
     print("uploaded to %s" % stage)
     print("the service reloads the file within ~5 min (metadataCache); to apply immediately:")
     print("  ALTER SERVICE <DATABASE>.<SCHEMA>.HERMES_SERVICE SUSPEND;")
@@ -275,11 +291,11 @@ def main():
     parser.add_argument("--connection", default=DEFAULT_CONNECTION)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--stage", default=DEFAULT_STAGE)
-    parser.add_argument("--pat-file", help="file contenente il PAT")
-    parser.add_argument("--write", action="store_true", help="riscrive cortex_models.json")
+    parser.add_argument("--pat-file", help="file containing the PAT")
+    parser.add_argument("--write", action="store_true", help="rewrites cortex_models.json")
     parser.add_argument("--upload", action="store_true",
-                        help="ricarica sullo stage (implica --write)")
-    parser.add_argument("--jobs", type=int, default=4, help="chiamate in parallelo")
+                        help="reloads to the stage (implies --write)")
+    parser.add_argument("--jobs", type=int, default=4, help="calls in parallel")
     args = parser.parse_args()
     if args.upload:
         args.write = True
@@ -287,15 +303,16 @@ def main():
     pat = read_pat(args)
     with open(MODELS_FILE) as fh:
         doc = json.load(fh)
+    normalize_legacy_keys(doc)
     known = dict(doc["models"])
 
     lifecycle = catalog_lifecycle(args.connection)
     candidates = set(lifecycle)
-    # I nomi gia' in config vanno riprovati comunque: uno puo' essere andato EOL, e
-    # un alias invocabile puo' non comparire affatto nel catalogo.
+    # The names already in config must be retried anyway: one may have gone EOL, and
+    # an invocable alias may not appear in the catalog at all.
     candidates.update(known)
     candidates = sorted(candidates)
-    print("candidati da provare: %d\n" % len(candidates))
+    print("candidates to test: %d\n" % len(candidates))
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(lambda m: probe(args.host, pat, m), candidates))
@@ -320,51 +337,51 @@ def main():
                 no_tools.append(name)
         meta = lifecycle.get(name, {})
         if meta.get("status") == "LEGACY":
-            legacy.append((name, meta.get("eol") or "data non dichiarata"))
+            legacy.append((name, meta.get("eol") or "date not declared"))
 
     legacy_names = dict(legacy)
-    print("FUNZIONANTI: %d" % len(models))
+    print("WORKING: %d" % len(models))
     for name in sorted(models, key=family_key):
         flags = ""
         if name in constrained:
-            flags += "  [tools solo con reasoning_effort=none]"
+            flags += "  [tools only with reasoning_effort=none]"
         if name in no_tools:
-            flags += "  [nessun tool calling]"
+            flags += "  [no tool calling]"
         if name in legacy_names:
             flags += "  [LEGACY, EOL %s]" % legacy_names[name]
         if name in added:
-            flags += "  <-- NUOVO, context da verificare a mano"
+            flags += "  <-- NEW, context to be verified by hand"
         print("  %-28s %8d%s" % (name, models[name], flags))
 
     if removed:
-        print("\nNON PIU' DISPONIBILI (erano in config):")
+        print("\nNO LONGER AVAILABLE (they were in config):")
         for name, reason in removed:
             print("  %-28s %s" % (name, reason))
     if notes:
-        print("\nNOTE SUL TOOL CALLING:")
+        print("\nNOTES ON TOOL CALLING:")
         for name, note in notes:
             print("  %-28s %s" % (name, note))
     if legacy:
-        print("\nLEGACY: rispondono adesso ma hanno una data di morte.")
+        print("\nLEGACY: they respond now but have a death date.")
         print("If any workflow or agent uses them, it will break at EOL.")
     if added:
-        print("\nATTENZIONE: %d modelli nuovi hanno context=%d (prudenziale)."
+        print("\nWARNING: %d new models have context=%d (conservative)."
               % (len(added), DEFAULT_CONTEXT))
-        print("Correggerlo a mano da aisql-regional-availability prima di considerarlo definitivo.")
+        print("Correct it by hand from aisql-regional-availability before considering it final.")
 
     if not models:
-        die("nessun modello ha risposto: PAT scaduto o host sbagliato? file non toccato")
+        die("no model responded: expired PAT or wrong host? file left untouched")
 
     if not args.write:
-        print("\ndry-run: cortex_models.json non modificato (usa --write)")
+        print("\ndry-run: cortex_models.json not modified (use --write)")
         return
 
-    # _non_disponibili: si fondono le voci storiche con quelle rilevate ora, cosi'
-    # non si perdono le annotazioni scritte a mano (es. i nomi con '1p-').
-    merged = dict(doc.get("_non_disponibili", {}))
+    # _unavailable: the historical entries are merged with the ones detected now, so
+    # the hand-written annotations are not lost (e.g. the names with '1p-').
+    merged = dict(doc.get("_unavailable", {}))
     merged.update(unavailable)
-    merged["_commento"] = doc.get("_non_disponibili", {}).get(
-        "_commento", "Models tested and NOT working (unknown or unavailable). "
+    merged["_comment"] = doc.get("_unavailable", {}).get(
+        "_comment", "Models tested and NOT working (unknown or unavailable). "
         "Do not add them back without re-testing.")
 
     doc["models"] = models
@@ -373,14 +390,14 @@ def main():
     # with tool calling; agents or orchestrators that depend on tools must exclude them.
     doc["tools_unsupported"] = sorted(no_tools)
     doc["_legacy"] = dict(sorted(legacy)) or {}
-    doc["_non_disponibili"] = merged
+    doc["_unavailable"] = merged
 
     backup = MODELS_FILE + ".bak"
     os.replace(MODELS_FILE, backup)
     with open(MODELS_FILE, "w") as fh:
         fh.write(render(doc))
-    json.load(open(MODELS_FILE))                          # non spedire JSON rotto
-    print("\nscritto %s (backup in %s)" % (MODELS_FILE, backup))
+    json.load(open(MODELS_FILE))                          # do not ship broken JSON
+    print("\nwrote %s (backup in %s)" % (MODELS_FILE, backup))
 
     if args.upload:
         upload(args.connection, args.stage)

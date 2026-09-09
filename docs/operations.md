@@ -44,7 +44,7 @@ Both must report a non-zero count and the same `md5sum`. If `/opt` reports 0, th
 
 ```text
 [hermes] tailnet IP: 100.x.y.z
-[hermes] hermes serve pronto su 100.x.y.z:9119 (Remote gateway del Desktop)
+[hermes] hermes serve ready on 100.x.y.z:9119 (Desktop Remote gateway)
 ```
 
 The tailnet IP is logged deliberately: the `readinessProbe` floods the log every 5 seconds, so with a tail of 400 it becomes unreachable after roughly 30 minutes.

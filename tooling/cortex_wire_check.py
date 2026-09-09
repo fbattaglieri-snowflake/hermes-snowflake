@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Verifica quali scostamenti dal wire OpenAI sono ancora presenti sul Cortex REST API.
+"""Check which deviations from the OpenAI wire protocol are still present on the Cortex REST API.
 
-A cosa serve: cortex_proxy.py esiste solo per aggirare cinque difetti del gateway.
-Quando Snowflake ne sistema uno, il fix corrispondente nel proxy diventa inutile — e in
-un caso (la lista modelli) diventa addirittura dannoso, perche' nasconderebbe i modelli
-nuovi senza dare errore. Questo script dice, con chiamate reali, quali fix servono ancora.
+What it is for: cortex_proxy.py exists only to work around five gateway defects.
+When Snowflake fixes one of them, the corresponding fix in the proxy becomes useless — and in
+one case (the model list) it becomes actively harmful, because it would hide new models
+without reporting an error. This script tells you, with real calls, which fixes are still needed.
 
-Uso:
+Usage:
     CORTEX_PAT="..." python3 cortex_wire_check.py
-    CORTEX_PAT="..." python3 cortex_wire_check.py --host <altro-account>.snowflakecomputing.com
+    CORTEX_PAT="..." python3 cortex_wire_check.py --host <other-account>.snowflakecomputing.com
 
-Non modifica nulla: fa solo richieste di lettura/completion minime.
-Confrontare l'output con il baseline registrato nell'handover
-20260818_cortex_gateway_migration_playbook.md.
+It changes nothing: it only issues minimal read/completion requests.
+Compare the output with the baseline recorded in tooling/README.md.
 """
 
 import argparse
@@ -23,17 +22,17 @@ import urllib.error
 import urllib.request
 
 DEFAULT_HOST = os.environ.get("SNOWFLAKE_HOST", "localhost")
-# Modello Claude: e' la famiglia che soffre di piu' (passa per lo strato di traduzione).
+# Claude model: the family that suffers the most (it goes through the translation layer).
 CLAUDE = "claude-sonnet-5"
-# Modello con il vincolo tools+reasoning_effort.
+# Model subject to the tools+reasoning_effort constraint.
 REASONING = "openai-gpt-5.6-luna"
 
-OK, BROKEN, UNKNOWN = "RISOLTO", "ANCORA PRESENTE", "NON DETERMINATO"
-INFO = "INFORMATIVO"
+OK, BROKEN, UNKNOWN = "FIXED", "STILL PRESENT", "UNDETERMINED"
+INFO = "INFORMATIONAL"
 
 
 def call(host, pat, path, payload=None, method=None, extra_headers=None):
-    """(status, parsed_or_text). Non solleva su 4xx/5xx."""
+    """(status, parsed_or_text). Does not raise on 4xx/5xx."""
     url = "https://%s/api/v2/cortex/v1%s" % (host, path)
     headers = {
         "Content-Type": "application/json",
@@ -52,7 +51,7 @@ def call(host, pat, path, payload=None, method=None, extra_headers=None):
     except urllib.error.HTTPError as exc:
         raw, status = exc.read().decode("utf-8", "replace"), exc.code
     except Exception as exc:
-        return 0, "eccezione locale: %s" % exc
+        return 0, "local exception: %s" % exc
     try:
         return status, json.loads(raw)
     except ValueError:
@@ -76,46 +75,46 @@ def first_choice(parsed):
 
 
 def t1_max_tokens(host, pat):
-    """Problema 1: max_tokens rifiutato. Fix nel proxy: adapt_payload()."""
+    """Problem 1: max_tokens rejected. Fix in the proxy: adapt_payload()."""
     status, parsed = chat(host, pat, model=CLAUDE, max_tokens=16)
     if status == 200:
-        return OK, "max_tokens accettato", "adapt_payload(): la riscrittura non serve piu'"
+        return OK, "max_tokens accepted", "adapt_payload(): the rewrite is no longer needed"
     msg = parsed.get("message", parsed) if isinstance(parsed, dict) else parsed
-    return BROKEN, "HTTP %s — %s" % (status, str(msg)[:110]), "tenere la riscrittura"
+    return BROKEN, "HTTP %s — %s" % (status, str(msg)[:110]), "keep the rewrite"
 
 
 def t2_models_list(host, pat):
-    """Problema 2: GET /v1/models -> 404. Fix nel proxy: do_GET() serve la lista dal file.
+    """Problem 2: GET /v1/models -> 404. Fix in the proxy: do_GET() serves the list from file.
 
-    ATTENZIONE: e' l'unico fix che, se il gateway viene sistemato, diventa DANNOSO.
-    Il proxy continuerebbe a servire il suo file, nascondendo i modelli nuovi in silenzio.
+    WARNING: this is the only fix that becomes HARMFUL once the gateway is repaired.
+    The proxy would keep serving its own file, silently hiding new models.
     """
     status, parsed = call(host, pat, "/models")
     if status == 200:
         n = len(parsed.get("data", [])) if isinstance(parsed, dict) else "?"
-        return (OK, "HTTP 200, %s modelli" % n,
-                "URGENTE: do_GET() va cambiato in 'prova upstream, ripiega sul file', "
-                "altrimenti nasconde i modelli nuovi")
-    return BROKEN, "HTTP %s" % status, "tenere la lista servita dal file"
+        return (OK, "HTTP 200, %s models" % n,
+                "URGENT: do_GET() must be changed to 'try upstream, fall back to the file', "
+                "otherwise it hides new models")
+    return BROKEN, "HTTP %s" % status, "keep serving the list from the file"
 
 
 def t3_finish_reason(host, pat):
-    """Problema 3: finish_reason vuoto. Fix nel proxy: normalize_finish_reason()/stop_chunk().
+    """Problem 3: empty finish_reason. Fix in the proxy: normalize_finish_reason()/stop_chunk().
 
-    Tre sotto-casi, perche' il valore corretto e' diverso in ognuno:
-    completa -> stop, tool call -> tool_calls, troncata -> length.
-    Il fix attuale forza sempre 'stop': e' LOSSY, marca come completa una risposta tagliata.
+    Three sub-cases, because the correct value differs in each:
+    complete -> stop, tool call -> tool_calls, truncated -> length.
+    The current fix always forces 'stop': it is LOSSY, marking a truncated response as complete.
     """
     results = {}
 
     _, parsed = chat(host, pat, model=CLAUDE, max_completion_tokens=16)
-    results["completa (atteso 'stop')"] = first_choice(parsed).get("finish_reason")
+    results["complete (expected 'stop')"] = first_choice(parsed).get("finish_reason")
 
     tool = {
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Meteo di una citta",
+            "description": "Weather for a city",
             "parameters": {
                 "type": "object",
                 "properties": {"city": {"type": "string"}},
@@ -125,50 +124,50 @@ def t3_finish_reason(host, pat):
     }
     _, parsed = chat(
         host, pat, model=CLAUDE, max_completion_tokens=200, tools=[tool],
-        messages=[{"role": "user", "content": "Che tempo fa a Milano? Usa il tool."}],
+        messages=[{"role": "user", "content": "What is the weather in Milan? Use the tool."}],
     )
     choice = first_choice(parsed)
-    results["tool call (atteso 'tool_calls')"] = choice.get("finish_reason")
+    results["tool call (expected 'tool_calls')"] = choice.get("finish_reason")
     has_tool_calls = bool((choice.get("message") or {}).get("tool_calls"))
 
     _, parsed = chat(
         host, pat, model=CLAUDE, max_completion_tokens=5,
-        messages=[{"role": "user", "content": "Scrivi un saggio lungo sulla storia di Roma."}],
+        messages=[{"role": "user", "content": "Write a long essay on the history of Rome."}],
     )
-    results["troncata (atteso 'length')"] = first_choice(parsed).get("finish_reason")
+    results["truncated (expected 'length')"] = first_choice(parsed).get("finish_reason")
 
     detail = "; ".join("%s -> %r" % (k, v) for k, v in results.items())
-    detail += "; tool_calls popolato: %s" % has_tool_calls
+    detail += "; tool_calls populated: %s" % has_tool_calls
     values = list(results.values())
 
     if all(v for v in values) and values[0] == "stop":
-        return OK, detail, "normalize_finish_reason() e stop_chunk() si disattivano da soli"
+        return OK, detail, "normalize_finish_reason() and stop_chunk() disable themselves"
     if any(v for v in values):
-        return UNKNOWN, detail, "parzialmente sistemato: rileggere il codice prima di toccarlo"
+        return UNKNOWN, detail, "partially fixed: re-read the code before touching it"
     return (BROKEN, detail,
-            "tenere il fix, MA migliorarlo: dedurre 'tool_calls' da message.tool_calls e "
-            "'length' da usage.completion_tokens >= max richiesto (vedi handover)")
+            "keep the fix, BUT improve it: derive 'tool_calls' from message.tool_calls and "
+            "'length' from usage.completion_tokens >= the requested max (see tooling/README.md)")
 
 
 def t4_tools_reasoning(host, pat):
-    """Problema 4: tools + reasoning_effort incompatibili. Fix: lista + retry adattivo."""
+    """Problem 4: tools + reasoning_effort incompatible. Fix: list + adaptive retry."""
     tool = {
         "type": "function",
         "function": {
             "name": "noop",
-            "description": "Non fa nulla",
+            "description": "Does nothing",
             "parameters": {"type": "object", "properties": {}},
         },
     }
     status, parsed = chat(host, pat, model=REASONING, max_completion_tokens=16, tools=[tool])
     if status == 200:
-        return (OK, "%s accetta tools senza forzare reasoning_effort" % REASONING,
-                "svuotare tools_require_reasoning_effort_none in cortex_models.json "
-                "(basta rilanciare refresh_cortex_models.py --write --upload)")
+        return (OK, "%s accepts tools without forcing reasoning_effort" % REASONING,
+                "empty out tools_require_reasoning_effort_none in cortex_models.json "
+                "(just re-run refresh_cortex_models.py --write --upload)")
     msg = parsed.get("message", parsed) if isinstance(parsed, dict) else parsed
     if status == 400 and "unknown model" in str(msg).lower():
-        return UNKNOWN, "%s non piu' disponibile" % REASONING, "riprovare con altro reasoning model"
-    return BROKEN, "HTTP %s — %s" % (status, str(msg)[:110]), "tenere lista + retry adattivo"
+        return UNKNOWN, "%s no longer available" % REASONING, "retry with another reasoning model"
+    return BROKEN, "HTTP %s — %s" % (status, str(msg)[:110]), "keep list + adaptive retry"
 
 
 def t5_responses_api(host, pat):
@@ -181,7 +180,7 @@ def t5_responses_api(host, pat):
 
 
 def t6_anthropic_endpoint(host, pat):
-    """Extra: l'endpoint Anthropic non ha i problemi 1 e 3. Utile come confronto."""
+    """Extra: the Anthropic endpoint does not suffer from problems 1 and 3. Useful to compare."""
     url = "/messages"
     status, parsed = call(
         host, pat, url,
@@ -192,24 +191,24 @@ def t6_anthropic_endpoint(host, pat):
         msg = parsed.get("message", parsed) if isinstance(parsed, dict) else parsed
         return UNKNOWN, "HTTP %s — %s" % (status, str(msg)[:110]), "-"
     reason = parsed.get("stop_reason") if isinstance(parsed, dict) else None
-    return (INFO, "stop_reason -> %r (max_tokens accettato)" % reason,
-            "alternativa ai Claude senza strato di traduzione, vedi handover")
+    return (INFO, "stop_reason -> %r (max_tokens accepted)" % reason,
+            "an alternative for Claude models without the translation layer, see tooling/README.md")
 
 
 TESTS = [
-    ("1. max_tokens rifiutato",               t1_max_tokens),
+    ("1. max_tokens rejected",                t1_max_tokens),
     ("2. GET /v1/models -> 404",              t2_models_list),
-    ("3. finish_reason non valorizzato",      t3_finish_reason),
+    ("3. finish_reason not populated",        t3_finish_reason),
     ("4. tools + reasoning_effort",           t4_tools_reasoning),
-    ("5. /v1/responses non abilitato",        t5_responses_api),
-    ("6. endpoint Anthropic (confronto)",     t6_anthropic_endpoint),
+    ("5. /v1/responses not enabled",          t5_responses_api),
+    ("6. Anthropic endpoint (comparison)",    t6_anthropic_endpoint),
 ]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--pat-file", help="file contenente il PAT")
+    parser.add_argument("--pat-file", help="file containing the PAT")
     args = parser.parse_args()
 
     if args.pat_file:
@@ -217,7 +216,7 @@ def main():
     else:
         pat = os.environ.get("CORTEX_PAT", "").strip()
     if not pat:
-        sys.exit("serve il PAT: esporta CORTEX_PAT oppure usa --pat-file")
+        sys.exit("the PAT is required: export CORTEX_PAT or use --pat-file")
 
     print("host: %s\n" % args.host)
     verdicts = {}
@@ -225,22 +224,21 @@ def main():
         try:
             verdict, detail, action = fn(args.host, pat)
         except Exception as err:
-            verdict, detail, action = UNKNOWN, "errore nel test: %s" % err, "-"
+            verdict, detail, action = UNKNOWN, "error in test: %s" % err, "-"
         verdicts[label] = verdict
         print("%-36s %s" % (label, verdict))
-        print("    riscontro: %s" % detail)
-        print("    azione:    %s\n" % action)
+        print("    finding: %s" % detail)
+        print("    action:  %s\n" % action)
 
     risolti = [k for k, v in verdicts.items() if v == OK]
     print("=" * 78)
     if not risolti:
-        print("Nessun cambiamento: il proxy serve ancora tutto intero.")
+        print("No change: the proxy is still needed in full.")
     else:
-        print("CAMBIATO qualcosa (%d voci): il proxy va aggiornato." % len(risolti))
+        print("SOMETHING CHANGED (%d entries): the proxy must be updated." % len(risolti))
         for k in risolti:
             print("  - %s" % k)
-        print("\nSeguire la sezione 'PIANO DI MIGRAZIONE' dell'handover")
-        print("20260818_cortex_gateway_migration_playbook.md")
+        print("\nFollow the migration section of tooling/README.md")
 
 
 if __name__ == "__main__":

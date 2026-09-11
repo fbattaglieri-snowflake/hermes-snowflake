@@ -13,9 +13,12 @@ RUN apt-get update && apt-get install -y \
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
 # Install cloudflared (pinned version for reproducible builds)
-ARG CLOUDFLARED_VERSION=2026.8.3
+ARG CLOUDFLARED_VERSION=2026.9.0
+ARG CLOUDFLARED_SHA256=53b7a7a5420d188758d24341294acb0d1bca54296548ac05e38811a694ac6134
 RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
-    -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared && \
+    -o /usr/local/bin/cloudflared && \
+    printf '%s  %s\n' "$CLOUDFLARED_SHA256" /usr/local/bin/cloudflared | sha256sum -c - && \
+    chmod +x /usr/local/bin/cloudflared && \
     cloudflared --version
 
 # Tailscale, for the Desktop Remote gateway.
@@ -29,7 +32,7 @@ RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CL
 # Version pinned for the same reason as the Hermes pin: a non-reproducible build
 # turns a rebuild done for an unrelated reason into an unrequested Tailscale
 # upgrade.
-ARG TAILSCALE_VERSION=1.102.3
+ARG TAILSCALE_VERSION=1.102.4
 RUN set -eu; \
     curl -fsSL -o /tmp/ts.tgz \
       "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz"; \

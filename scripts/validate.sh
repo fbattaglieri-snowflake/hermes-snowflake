@@ -4,15 +4,17 @@ set -euo pipefail
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPOSITORY_ROOT"
 
-python -m py_compile \
+python3 -m py_compile \
   proxy/cortex_proxy.py \
   tooling/cortex_model_gate.py \
   tooling/refresh_cortex_models.py \
   tooling/cortex_wire_check.py \
-  docker/hermes/hermes_configure.py
-ruff check proxy tooling docker/hermes
-pytest proxy -q
-python -m json.tool proxy/models.json >/dev/null
+  docker/hermes/hermes_configure.py \
+  docker/hermes/migrate_soul.py
+python3 -m ruff check proxy tooling docker/hermes scripts tests
+python3 -m pytest proxy tests -q
+python3 -m json.tool proxy/models.json >/dev/null
+bash -n scripts/wait_for_services.sh docker/hermes/start.sh docker/hermes/spcs_token.sh
 yamllint -d '{extends: default, rules: {line-length: disable, document-start: disable, truthy: disable, empty-lines: disable, braces: disable}}' \
   .github infrastructure/specs
 

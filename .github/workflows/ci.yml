@@ -51,6 +51,15 @@ jobs:
           file: docker/hermes/Dockerfile
           platforms: linux/amd64
           push: false
+          load: true
           tags: hermes-snowflake:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Scan built image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: hermes-snowflake:test
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: "1"

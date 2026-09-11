@@ -1,0 +1,16 @@
+name: Backup State (not implemented)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse unsupported automatic backup
+        run: |
+          echo "::error::Automatic state backup is not implemented. See docs/backup-recovery.md. No account resources have been accessed."
+          exit 1

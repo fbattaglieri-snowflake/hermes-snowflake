@@ -63,39 +63,8 @@ fi
 # route is the `terminal` tool, which the agent does have, with `hermes send`.
 # The marker makes the append idempotent across restarts.
 #
-# The marker is versioned because SOUL.md lives on the block volume: a volume
-# provisioned by an earlier image already carries the v1 block, and the guard
-# alone would keep it forever. Bumping the version appends the current text, and
-# the awk pass first drops any superseded block, so the agent never sees two
-# contradictory sets of instructions. The pass cuts from the old marker to the
-# next HTML comment marker (or end of file), leaving anything appended after an
-# unrelated marker untouched.
 SOUL_FILE="${HERMES_DIR}/SOUL.md"
-SOUL_MARK="<!-- spcs-telegram-v2 -->"
-SOUL_MARK_SUPERSEDED="<!-- spcs-telegram-v1 -->"
-if [ -f "$SOUL_FILE" ] && grep -qF "$SOUL_MARK_SUPERSEDED" "$SOUL_FILE" 2>/dev/null; then
-    awk -v mark="$SOUL_MARK_SUPERSEDED" '
-        index($0, mark) { skip = 1; next }
-        skip && /^<!--/ { skip = 0 }
-        !skip
-    ' "$SOUL_FILE" > "${SOUL_FILE}.tmp" && mv "${SOUL_FILE}.tmp" "$SOUL_FILE"
-    log "superseded Telegram block removed from SOUL.md"
-fi
-if [ -f "$SOUL_FILE" ] && ! grep -qF "$SOUL_MARK" "$SOUL_FILE" 2>/dev/null; then
-    {
-        printf '\n%s\n' "$SOUL_MARK"
-        printf '## Sending messages on Telegram\n\n'
-        printf 'There is no message-sending tool callable by the model.\n'
-        printf 'To send on Telegram, use the `terminal` tool:\n\n'
-        printf '    hermes send --to telegram "message text"\n\n'
-        printf 'The default recipient is TELEGRAM_HOME_CHANNEL, already\n'
-        printf 'configured: do not ask for the chat_id unless given one.\n'
-        printf 'For a different chat: `--to telegram:<chat_id>`.\n'
-        printf 'To list the available targets: `hermes send --list telegram`.\n'
-        printf 'Do not use computer_use for Telegram: the container is headless.\n'
-    } >> "$SOUL_FILE"
-    log "Telegram instructions added to SOUL.md"
-fi
+python3 /opt/migrate_soul.py "$SOUL_FILE" || log "WARN: SOUL migration requires manual review"
 
 # ---------------------------------------------------------------- Hermes configuration
 # The volume may contain a config.yaml hand-written in previous sessions, far

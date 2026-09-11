@@ -41,13 +41,13 @@ jobs:
           snow spcs image-registry token -x --format JSON \
             | python -c 'import json,sys; print(json.load(sys.stdin)[0]["token"])' \
             | docker login "$registry" -u 0sessiontoken --password-stdin
-      - name: Build and push immutable hermes image
+      - name: Build and push uniquely tagged hermes image
         env:
           REGISTRY: ${{ steps.registry.outputs.registry }}
           DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
           SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
           HERMES_REPOSITORY: ${{ vars.HERMES_IMAGE_REPOSITORY }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           docker buildx build --platform linux/amd64 --push \
             -f docker/hermes/Dockerfile \
@@ -75,7 +75,7 @@ jobs:
             -D "warehouse=${{ vars.SNOWFLAKE_WAREHOUSE }}" \
             -D "compute_pool=${{ vars.HERMES_COMPUTE_POOL }}" \
             -D "hermes_image_repository=${{ vars.HERMES_IMAGE_REPOSITORY }}" \
-            -D "image_tag=${{ github.sha }}" \
+            -D "image_tag=${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}" \
             -D "hermes_provider=${{ vars.HERMES_PROVIDER || 'snowflake-cortex-proxy' }}" \
             -D "hermes_model=${{ vars.HERMES_MODEL || 'claude-sonnet-5' }}" \
             -D "egress_integration=HERMES_EGRESS_EAI"
@@ -84,8 +84,10 @@ jobs:
           SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
           SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_DEPLOY_ROLE }}
+          SERVICE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+          SERVICE_SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
         run: |
-          sleep 30
+          bash scripts/wait_for_services.sh "$SERVICE_DATABASE.$SERVICE_SCHEMA.HERMES_SERVICE"
           snow sql -x --local-only --filename infrastructure/sql/30_verify.sql \
             -D "deploy_role=${{ vars.SNOWFLAKE_DEPLOY_ROLE }}" \
             -D "database=${{ vars.SNOWFLAKE_DATABASE }}" \

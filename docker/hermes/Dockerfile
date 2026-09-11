@@ -134,6 +134,7 @@ RUN mkdir -p /opt/hermes-seed && \
 # instead of replacing it (the default is ~99KB of settings that must not be
 # lost).
 COPY docker/hermes/hermes_configure.py /opt/hermes_configure.py
+COPY docker/hermes/migrate_soul.py /opt/migrate_soul.py
 
 # Verified Cortex model list: a single source read by both the proxy and the
 # configurator, so the two lists cannot diverge.

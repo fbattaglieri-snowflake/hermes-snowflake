@@ -1,45 +1,47 @@
 #!/usr/bin/env python3
-"""Cancello di compatibilita' per i modelli Cortex: dice se un modello nuovo e'
-usabile con lo stack costruito, PRIMA di metterlo in configurazione.
+"""Compatibility gate for Cortex models: tells you whether a new model is
+usable with the stack we built, BEFORE putting it into configuration.
 
-Perche' non basta refresh_cortex_models.py
------------------------------------------
-Quello script risponde a tre domande (il modello risponde? accetta 'tools'? vuole
-reasoning_effort="none"?) e su quella base riscrive cortex_models.json. Sono
-condizioni necessarie ma non sufficienti: lo stack si regge su sei scostamenti
-del wire Cortex normalizzati da cortex_proxy.py, e un modello nuovo puo' romperne
-uno senza fallire nessuno dei tre controlli. Il caso reale: i modelli Claude
-rispondono 200 al primo probe ma non valorizzano finish_reason, e con due tool
-call in un turno avvelenano la history in modo permanente — un guasto che
-si e' manifestato come "Telegram risponde solo 'model provider failed'".
+Why refresh_cortex_models.py is not enough
+------------------------------------------
+That script answers three questions (does the model respond? does it accept
+'tools'? does it want reasoning_effort="none"?) and rewrites cortex_models.json
+on that basis. Those are necessary but not sufficient conditions: the stack
+rests on six Cortex wire deviations normalized by cortex_proxy.py, and a new
+model can break one of them without failing any of the three checks. The real
+case: the Claude models answer 200 on the first probe but do not populate
+finish_reason, and with two tool calls in one turn they poison the history
+permanently — a failure that showed up as "Telegram only replies 'model
+provider failed'".
 
-Questo script testa quindi la COPPIA proxy+upstream, non il gateway nudo:
-importa le funzioni vere di cortex_proxy.py e le applica alla richiesta e alla
-risposta, come farebbe il proxy in esecuzione. Se il verdetto e' COMPATIBILE, il
-modello funziona con cio' che abbiamo costruito, non "con OpenAI in generale".
+This script therefore tests the proxy+upstream PAIR, not the bare gateway: it
+imports the real functions from cortex_proxy.py and applies them to the request
+and to the response, just as the running proxy would. If the verdict is
+COMPATIBLE, the model works with what we have built, not "with OpenAI in
+general".
 
-Cosa NON fa: non modifica nulla. Nessuna scrittura su file, stage, servizi o
-container. Solo chiamate in lettura al gateway.
+What it does NOT do: it changes nothing. No writes to files, stages, services
+or containers. Read-only calls to the gateway.
 
-Uso:
-    CORTEX_PAT="..." python3 cortex_model_gate.py --new     # solo i nomi nuovi
-    CORTEX_PAT="..." python3 cortex_model_gate.py --all     # regressione sui noti
+Usage:
+    CORTEX_PAT="..." python3 cortex_model_gate.py --new     # only the new names
+    CORTEX_PAT="..." python3 cortex_model_gate.py --all     # regression on known ones
     CORTEX_PAT="..." python3 cortex_model_gate.py --models deepseek-v4-flash
 
-L'assegnazione della variabile deve stare IN TESTA al comando: con
-'cd x && CORTEX_PAT="<chiave>" ...' l'iniezione del segreto non scatta e si
-ottiene HTTP 401 (trappola gia' incontrata, playbook §9).
+The variable assignment must come AT THE HEAD of the command: with
+'cd x && CORTEX_PAT="<key>" ...' the secret injection does not fire and you
+get HTTP 401 (a trap already hit, playbook §9).
 
-Verdetti
+Verdicts
 --------
-COMPATIBILE     text and tool calling work through the proxy: safe to promote
-CON RISERVA     responds but without usable tool calling. Suitable for text generation
-                only; NOT for Hermes in agent mode since agents depend on tool calling
-INCOMPATIBILE   does not respond at all from this account: do not add to config
+COMPATIBLE         text and tool calling work through the proxy: safe to promote
+WITH RESERVATION   responds but without usable tool calling. Suitable for text generation
+                   only; NOT for Hermes in agent mode since agents depend on tool calling
+INCOMPATIBLE       does not respond at all from this account: do not add to config
 
-Exit code: 1 se un modello GIA' in cortex_models.json regredisce (era in
-configurazione e ora non risponde, o ha perso il tool calling). Serve per
-accorgersi di una regressione lato Snowflake senza leggere tutto il report.
+Exit code: 1 if a model ALREADY in cortex_models.json regresses (it was in
+configuration and now does not respond, or has lost tool calling). Useful to
+notice a Snowflake-side regression without reading the whole report.
 """
 
 import argparse
@@ -59,19 +61,19 @@ MODELS_FILE = os.environ.get("CORTEX_MODELS_PATH", os.path.join(HERE, "..", "pro
 DEFAULT_CONNECTION = os.environ.get("SNOWFLAKE_CONNECTION", "default")
 DEFAULT_HOST = os.environ.get("SNOWFLAKE_HOST", "localhost")
 
-# Le trasformazioni del proxy sono la meta' del contratto da verificare: si
-# importano invece di riscriverle, altrimenti il gate misurerebbe una copia
-# divergente del codice che gira in produzione.
+# The proxy transformations are half of the contract to be verified: they are
+# imported instead of rewritten, otherwise the gate would measure a divergent
+# copy of the code that runs in production.
 try:
     import cortex_proxy
 except Exception as err:                                   # pragma: no cover
-    sys.exit("cortex_proxy.py non importabile (%s): il gate deve girare "
-             "nella stessa directory" % err)
+    sys.exit("cortex_proxy.py is not importable (%s): the gate must run "
+             "in the same directory" % err)
 
-# collapse_parallel_tool_calls() e' parte di cortex_proxy.py. La lookup resta
-# difensiva perche' il gate puo' essere puntato a un proxy piu' vecchio della
-# patch: in quel caso T5 non e' verificabile e il gate lo dichiara, invece di
-# far passare per compatibile un modello mai testato su quel vincolo.
+# collapse_parallel_tool_calls() is part of cortex_proxy.py. The lookup stays
+# defensive because the gate can be pointed at a proxy older than the patch: in
+# that case T5 is not verifiable and the gate says so, instead of passing off as
+# compatible a model never tested against that constraint.
 COLLAPSE = getattr(cortex_proxy, "collapse_parallel_tool_calls", None)
 
 TOOL = {
@@ -100,26 +102,26 @@ TOOL2 = {
     },
 }
 
-FINISH_VALIDI = {"stop", "length", "tool_calls", "content_filter"}
+FINISH_VALID = {"stop", "length", "tool_calls", "content_filter"}
 
-# Budget di output. NON abbassarli: i modelli di reasoning consumano il budget
-# prima di emettere testo, e con un valore troppo piccolo rispondono HTTP 200 con
-# contenuto vuoto e finish_reason='length'. Misurato il 2026-08-21: con 64 token
-# openai-gpt-5, -mini e -nano sembravano rotti; con 512 rispondono. E' la stessa
-# trappola di max_completion_tokens=1, che al primo censimento fece scartare per
-# sbaglio tutta la famiglia gpt-5.
-BUDGET_TESTO = 1024
-BUDGET_RETRY = 4096          # secondo tentativo quando il primo finisce in 'length'
+# Output budgets. Do NOT lower them: reasoning models consume the budget before
+# emitting text, and with too small a value they answer HTTP 200 with empty
+# content and finish_reason='length'. Measured on 2026-08-21: with 64 tokens
+# openai-gpt-5, -mini and -nano looked broken; with 512 they respond. It is the
+# same trap as max_completion_tokens=1, which in the first census caused the
+# whole gpt-5 family to be discarded by mistake.
+BUDGET_TEXT = 1024
+BUDGET_RETRY = 4096          # second attempt when the first ends in 'length'
 BUDGET_STREAM = 512
 BUDGET_TOOLS = 1024
 
 
 # --------------------------------------------------------------------------- #
-# trasporto
+# transport
 # --------------------------------------------------------------------------- #
 
 def post(host, pat, body, stream=False, timeout=120):
-    """(status, testo|righe_sse). Non solleva su 4xx/5xx: lo stato serve."""
+    """(status, text|sse_lines). Does not raise on 4xx/5xx: the status matters."""
     data = json.dumps(body).encode()
     req = urllib.request.Request(
         "https://%s/api/v2/cortex/v1/chat/completions" % host,
@@ -139,15 +141,15 @@ def post(host, pat, body, stream=False, timeout=120):
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")
-    except Exception as exc:                               # rete, DNS, timeout
-        return 0, "eccezione locale: %s" % exc
+    except Exception as exc:                               # network, DNS, timeout
+        return 0, "local exception: %s" % exc
 
 
-def motivo(status, testo):
-    """Riduce il corpo di un errore a una riga, distinguendo i tre casi che
-    contano: nome non nel catalogo dell'endpoint, nome noto ma non servito,
-    account non abilitato. Confonderli fa perdere ore."""
-    t = testo.strip()
+def reason(status, text):
+    """Reduces an error body to a single line, distinguishing the three cases
+    that matter: name not in the endpoint catalog, known name but not served,
+    account not enabled. Confusing them wastes hours."""
+    t = text.strip()
     try:
         parsed = json.loads(t)
         t = str(parsed.get("message") or parsed.get("error") or t)
@@ -155,111 +157,111 @@ def motivo(status, testo):
         pass
     t = " ".join(t.split())
     if status == 403:
-        return "HTTP 403 - account non abilitato"
+        return "HTTP 403 - account not enabled"
     low = t.lower()
     if "unknown model" in low:
-        return "unknown model (nome non servito da questo endpoint)"
+        return "unknown model (name not served by this endpoint)"
     if "unavailable" in low:
-        return "unavailable (nome riconosciuto ma non servito)"
+        return "unavailable (name recognized but not served)"
     return "HTTP %s: %s" % (status, t[:140])
 
 
-def scelta(testo):
+def choice(text):
     try:
-        return ((json.loads(testo).get("choices") or [{}])[0]) or {}
+        return ((json.loads(text).get("choices") or [{}])[0]) or {}
     except (ValueError, AttributeError, TypeError):
         return {}
 
 
 # --------------------------------------------------------------------------- #
-# i test
+# the tests
 # --------------------------------------------------------------------------- #
 
-def t1_t2_non_stream(host, pat, model, esito):
-    """T1 risposta non-stream con 'max_tokens' + T2 finish_reason normalizzato.
+def t1_t2_non_stream(host, pat, model, result):
+    """T1 non-stream response with 'max_tokens' + T2 normalized finish_reason.
 
-    Si parte dal body che manda HERMES (con 'max_tokens'), non da quello che
-    Cortex accetta: e' la riscrittura del proxy a doverlo rendere valido. Se
-    saltasse quel passaggio, il test misurerebbe uno scenario che in produzione
-    non esiste.
+    We start from the body HERMES sends (with 'max_tokens'), not from the one
+    Cortex accepts: it is the proxy rewrite that has to make it valid. If that
+    step were skipped, the test would measure a scenario that does not exist in
+    production.
 
-    Un contenuto vuoto con finish_reason='length' NON e' un difetto del modello:
-    e' il budget esaurito nel reasoning. Si ritenta una volta piu' larghi prima
-    di dichiarare KO, altrimenti il gate produce falsi allarmi sui modelli di
-    reasoning (osservato su tutta la famiglia openai-gpt-5).
+    Empty content with finish_reason='length' is NOT a model defect: it is the
+    budget exhausted in reasoning. We retry once with a wider budget before
+    declaring KO, otherwise the gate produces false alarms on reasoning models
+    (observed across the whole openai-gpt-5 family).
     """
-    def tenta(budget):
-        richiesta = {
+    def attempt(budget):
+        request = {
             "model": model,
             "max_tokens": budget,
             "messages": [{"role": "user", "content": "Reply with exactly: PONG"}],
         }
-        adattato, corpo = cortex_proxy.adapt_payload(json.dumps(richiesta).encode())
-        esito["max_tokens_riscritto"] = "max_completion_tokens" in (corpo or {})
-        return post(host, pat, json.loads(adattato)) + (budget,)
+        adapted, body = cortex_proxy.adapt_payload(json.dumps(request).encode())
+        result["max_tokens_rewritten"] = "max_completion_tokens" in (body or {})
+        return post(host, pat, json.loads(adapted)) + (budget,)
 
-    status, testo, budget = tenta(BUDGET_TESTO)
+    status, text, budget = attempt(BUDGET_TEXT)
     if status != 200:
-        esito["T1"] = "KO"
-        esito["motivo"] = motivo(status, testo)
+        result["T1"] = "KO"
+        result["reason"] = reason(status, text)
         return False
 
-    ch = scelta(testo)
-    contenuto = ((ch.get("message") or {}).get("content") or "").strip()
-    if not contenuto and ch.get("finish_reason") == "length":
-        esito["note"].append(
-            "primo tentativo esaurito nel reasoning (%d token, finish='length'): "
-            "ritentato con %d" % (budget, BUDGET_RETRY))
-        status, testo, budget = tenta(BUDGET_RETRY)
-        ch = scelta(testo)
-        contenuto = ((ch.get("message") or {}).get("content") or "").strip()
+    ch = choice(text)
+    content = ((ch.get("message") or {}).get("content") or "").strip()
+    if not content and ch.get("finish_reason") == "length":
+        result["note"].append(
+            "first attempt exhausted in reasoning (%d tokens, finish='length'): "
+            "retried with %d" % (budget, BUDGET_RETRY))
+        status, text, budget = attempt(BUDGET_RETRY)
+        ch = choice(text)
+        content = ((ch.get("message") or {}).get("content") or "").strip()
 
-    esito["budget_necessario"] = budget
-    esito["T1"] = "OK" if contenuto else "KO"
-    esito["contenuto"] = contenuto[:30]
-    if not contenuto:
-        esito["motivo"] = ("HTTP 200 ma contenuto vuoto anche con %d token "
-                           "(finish=%r)" % (budget, ch.get("finish_reason")))
+    result["budget_required"] = budget
+    result["T1"] = "OK" if content else "KO"
+    result["content"] = content[:30]
+    if not content:
+        result["reason"] = ("HTTP 200 but empty content even with %d tokens "
+                            "(finish=%r)" % (budget, ch.get("finish_reason")))
         return False
 
-    # T2: cosa manda Cortex, e cosa resta dopo la normalizzazione del proxy.
-    grezzo = ch.get("finish_reason")
-    esito["finish_upstream"] = repr(grezzo)
-    normalizzato = cortex_proxy.normalize_finish_reason(testo, requested_max=budget)
-    dopo = (scelta(normalizzato.decode() if isinstance(normalizzato, bytes)
-                   else normalizzato)).get("finish_reason")
-    esito["finish_proxy"] = repr(dopo)
-    esito["T2"] = "OK" if dopo in FINISH_VALIDI else "KO"
+    # T2: what Cortex sends, and what is left after the proxy normalization.
+    raw = ch.get("finish_reason")
+    result["finish_upstream"] = repr(raw)
+    normalized = cortex_proxy.normalize_finish_reason(text, requested_max=budget)
+    after = (choice(normalized.decode() if isinstance(normalized, bytes)
+                    else normalized)).get("finish_reason")
+    result["finish_proxy"] = repr(after)
+    result["T2"] = "OK" if after in FINISH_VALID else "KO"
     return True
 
 
-def t3_streaming(host, pat, model, esito):
-    """T3 streaming: arrivano chunk, e lo stream si chiude con un finish_reason.
+def t3_streaming(host, pat, model, result):
+    """T3 streaming: chunks arrive, and the stream closes with a finish_reason.
 
-    Sui modelli Claude nessun chunk porta finish_reason e il proxy inietta un
-    chunk sintetico prima di [DONE]: senza di quello il client considera la
-    risposta troncata e tenta fino a 4 continuazioni, duplicando il testo.
+    On the Claude models no chunk carries finish_reason and the proxy injects a
+    synthetic chunk before [DONE]: without it the client considers the response
+    truncated and attempts up to 4 continuations, duplicating the text.
     """
-    richiesta = {
+    request = {
         "model": model,
         "max_completion_tokens": BUDGET_STREAM,
         "stream": True,
         "messages": [{"role": "user", "content": "Count from 1 to 5."}],
     }
-    status, righe = post(host, pat, richiesta, stream=True)
+    status, lines = post(host, pat, request, stream=True)
     if status != 200:
-        esito["T3"] = "KO"
-        esito["note"].append("streaming: %s" % motivo(status, "".join(righe)
-                                                     if isinstance(righe, list) else righe))
+        result["T3"] = "KO"
+        result["note"].append("streaming: %s" % reason(status, "".join(lines)
+                                                      if isinstance(lines, list) else lines))
         return
 
     chunk = 0
-    testo = ""
-    visto_finish = False
-    for riga in righe:
-        if not riga.startswith("data:"):
+    text = ""
+    saw_finish = False
+    for line in lines:
+        if not line.startswith("data:"):
             continue
-        payload = riga[5:].strip()
+        payload = line[5:].strip()
         if payload == "[DONE]":
             break
         try:
@@ -268,31 +270,31 @@ def t3_streaming(host, pat, model, esito):
             continue
         chunk += 1
         for c in obj.get("choices") or []:
-            testo += ((c.get("delta") or {}).get("content") or "")
+            text += ((c.get("delta") or {}).get("content") or "")
             if c.get("finish_reason"):
-                visto_finish = True
+                saw_finish = True
 
-    esito["stream_chunk"] = chunk
-    esito["stream_finish_upstream"] = visto_finish
+    result["stream_chunk"] = chunk
+    result["stream_finish_upstream"] = saw_finish
     if chunk == 0:
-        esito["T3"] = "KO"
-        esito["note"].append("streaming: nessun chunk ricevuto")
+        result["T3"] = "KO"
+        result["note"].append("streaming: no chunk received")
         return
-    # Il proxy chiude lo stream lui se l'upstream non lo fa: in entrambi i casi
-    # il client vede un finish_reason. Serve solo che i chunk arrivino.
-    esito["T3"] = "OK" if testo.strip() else "KO"
-    if not testo.strip():
-        esito["note"].append("streaming: chunk presenti ma nessun contenuto")
+    # The proxy closes the stream itself if the upstream does not: in both cases
+    # the client sees a finish_reason. All that matters is that chunks arrive.
+    result["T3"] = "OK" if text.strip() else "KO"
+    if not text.strip():
+        result["note"].append("streaming: chunks present but no content")
 
 
-def t4_tool_roundtrip(host, pat, model, esito):
-    """T4 il test che decide se un modello e' usabile da un agente.
+def t4_tool_roundtrip(host, pat, model, result):
+    """T4 the test that decides whether a model is usable by an agent.
 
-    Due passaggi: il modello deve emettere una tool call, e la richiesta
-    successiva che riporta il risultato del tool deve essere accettata. E' il
-    secondo passaggio quello che rompeva Hermes: un turno con toolUse senza
-    toolResult corrispondente viene rifiutato con 400 in modo non ritentabile,
-    e resta nella history persistita — quindi la sessione muore per sempre.
+    Two steps: the model must emit a tool call, and the next request carrying
+    the tool result back must be accepted. It is the second step that was
+    breaking Hermes: a turn with toolUse and no matching toolResult is rejected
+    with a non-retryable 400, and stays in the persisted history — so the
+    session dies forever.
     """
     base = {
         "model": model,
@@ -301,66 +303,66 @@ def t4_tool_roundtrip(host, pat, model, esito):
         "messages": [{"role": "user",
                       "content": "What time is it in Rome? Use the get_time tool."}],
     }
-    adattato, _ = cortex_proxy.adapt_payload(json.dumps(base).encode())
-    status, testo = post(host, pat, json.loads(adattato))
+    adapted, _ = cortex_proxy.adapt_payload(json.dumps(base).encode())
+    status, text = post(host, pat, json.loads(adapted))
 
     if status != 200:
-        low = testo.lower()
+        low = text.lower()
         if cortex_proxy.REASONING_TOOLS_ERROR in low:
-            esito["T4"] = "rinviato a T6"
+            result["T4"] = "deferred to T6"
             return
         if "tool calling is not supported" in low:
-            esito["T4"] = "KO"
-            esito["tools"] = "non supportati dal modello"
+            result["T4"] = "KO"
+            result["tools"] = "not supported by the model"
             return
-        esito["T4"] = "KO"
-        esito["tools"] = motivo(status, testo)
+        result["T4"] = "KO"
+        result["tools"] = reason(status, text)
         return
 
-    ch = scelta(testo)
-    chiamate = (ch.get("message") or {}).get("tool_calls") or []
-    if not chiamate:
-        # Non e' un difetto: il modello ha scelto di rispondere a parole.
-        esito["T4"] = "INCONCLUSIVO"
-        esito["tools"] = "nessuna tool call emessa (il modello ha risposto a testo)"
+    ch = choice(text)
+    calls = (ch.get("message") or {}).get("tool_calls") or []
+    if not calls:
+        # Not a defect: the model chose to answer in words.
+        result["T4"] = "INCONCLUSIVE"
+        result["tools"] = "no tool call emitted (the model answered with text)"
         return
 
-    esito["tool_calls_emesse"] = len(chiamate)
+    result["tool_calls_emitted"] = len(calls)
 
-    # Round-trip: si rimanda indietro l'assistant esattamente com'e' arrivato,
-    # piu' un messaggio 'tool' per OGNI chiamata (il vincolo e' 1:1).
-    storia = list(base["messages"])
-    storia.append({"role": "assistant",
-                   "content": (ch.get("message") or {}).get("content") or "",
-                   "tool_calls": chiamate})
-    for c in chiamate:
-        storia.append({"role": "tool",
-                       "tool_call_id": c.get("id"),
-                       "content": "14:30 local time"})
+    # Round-trip: the assistant message is sent back exactly as it arrived, plus
+    # one 'tool' message for EVERY call (the constraint is 1:1).
+    history = list(base["messages"])
+    history.append({"role": "assistant",
+                    "content": (ch.get("message") or {}).get("content") or "",
+                    "tool_calls": calls})
+    for c in calls:
+        history.append({"role": "tool",
+                        "tool_call_id": c.get("id"),
+                        "content": "14:30 local time"})
 
-    seguito = dict(base, messages=storia)
-    adattato, _ = cortex_proxy.adapt_payload(json.dumps(seguito).encode())
-    status, testo = post(host, pat, json.loads(adattato))
+    follow_up = dict(base, messages=history)
+    adapted, _ = cortex_proxy.adapt_payload(json.dumps(follow_up).encode())
+    status, text = post(host, pat, json.loads(adapted))
     if status != 200:
-        esito["T4"] = "KO"
-        esito["tools"] = "round-trip del toolResult rifiutato: %s" % motivo(status, testo)
+        result["T4"] = "KO"
+        result["tools"] = "toolResult round-trip rejected: %s" % reason(status, text)
         return
-    esito["T4"] = "OK"
+    result["T4"] = "OK"
 
 
-def t5_tool_parallele(host, pat, model, esito):
-    """T5 due tool call nello stesso turno: il caso di R-19.
+def t5_tool_parallel(host, pat, model, result):
+    """T5 two tool calls in the same turn: the R-19 case.
 
-    Cortex converte ogni messaggio 'tool' in un turno separato, quindi una
-    assistant con N toolUse riceve 1 solo toolResult nel primo turno e la
-    richiesta viene rifiutata. collapse_parallel_tool_calls() fonde il turno in
-    una sola chiamata conservando il contenuto degli altri risultati.
+    Cortex converts every 'tool' message into a separate turn, so an assistant
+    with N toolUse receives only 1 toolResult in the first turn and the request
+    is rejected. collapse_parallel_tool_calls() merges the turn into a single
+    call, preserving the content of the other results.
 
-    Se quella funzione non e' in questo sorgente, il test lo dichiara: e'
-    un'informazione piu' utile del test stesso, perche' significa che una
-    rebuild dell'immagine da questo contesto riporterebbe il guasto.
+    If that function is not in this source, the test says so: that is more
+    useful information than the test itself, because it means an image rebuild
+    from this context would bring the failure back.
     """
-    storia = [
+    history = [
         {"role": "user", "content": "Time and weather in Rome?"},
         {"role": "assistant", "content": "", "tool_calls": [
             {"id": "call_a", "type": "function",
@@ -372,125 +374,126 @@ def t5_tool_parallele(host, pat, model, esito):
         {"role": "tool", "tool_call_id": "call_b", "content": "sunny, 28C"},
     ]
     body = {"model": model, "max_completion_tokens": BUDGET_STREAM,
-            "tools": [TOOL, TOOL2], "messages": storia}
+            "tools": [TOOL, TOOL2], "messages": history}
 
-    status, testo = post(host, pat, body)
-    esito["parallele_grezze"] = "HTTP %s" % status
+    status, text = post(host, pat, body)
+    result["parallel_raw"] = "HTTP %s" % status
 
     if status == 200:
-        # L'upstream le accetta: nessuna fusione necessaria per questo modello.
-        esito["T5"] = "OK (upstream accetta le tool call parallele)"
+        # The upstream accepts them: no merging needed for this model.
+        result["T5"] = "OK (upstream accepts parallel tool calls)"
         return
 
     if COLLAPSE is None:
-        esito["T5"] = "NON VERIFICABILE"
-        esito["note"].append(
-            "collapse_parallel_tool_calls assente da cortex_proxy.py: il proxy "
-            "e' piu' vecchio della patch sulle tool call parallele")
+        result["T5"] = "NOT VERIFIABLE"
+        result["note"].append(
+            "collapse_parallel_tool_calls missing from cortex_proxy.py: the "
+            "proxy is older than the parallel tool call patch")
         return
 
-    fuso = COLLAPSE(dict(body))
-    status, testo = post(host, pat, fuso)
-    esito["T5"] = "OK (fuse dal proxy)" if status == 200 else "KO"
+    merged = COLLAPSE(dict(body))
+    status, text = post(host, pat, merged)
+    result["T5"] = "OK (merged by the proxy)" if status == 200 else "KO"
     if status != 200:
-        esito["note"].append("tool call parallele: %s" % motivo(status, testo))
+        result["note"].append("parallel tool calls: %s" % reason(status, text))
 
 
-def t6_tools_reasoning(host, pat, model, esito):
-    """T6 il vincolo tools + reasoning_effort della famiglia gpt-5.6.
+def t6_tools_reasoning(host, pat, model, result):
+    """T6 the tools + reasoning_effort constraint of the gpt-5.6 family.
 
-    Omettere reasoning_effort NON basta: il gateway applica un default e
-    rifiuta comunque. Il proxy forza "none" per i modelli in lista e ha un
-    retry adattivo sul messaggio d'errore. Qui si stabilisce a quale delle due
-    categorie appartiene il modello.
+    Omitting reasoning_effort is NOT enough: the gateway applies a default and
+    rejects anyway. The proxy forces "none" for the models in the list and has
+    an adaptive retry on the error message. Here we determine which of the two
+    categories the model belongs to.
     """
     body = {"model": model, "max_completion_tokens": BUDGET_STREAM, "tools": [TOOL],
             "reasoning_effort": "low",
             "messages": [{"role": "user", "content": "What time is it in Rome?"}]}
-    status, testo = post(host, pat, body)
+    status, text = post(host, pat, body)
     if status == 200:
-        esito["T6"] = "OK (tools e reasoning convivono)"
+        result["T6"] = "OK (tools and reasoning coexist)"
         return
-    if cortex_proxy.REASONING_TOOLS_ERROR not in testo.lower():
-        esito["T6"] = "n/d"
-        esito["note"].append("tools+reasoning: %s" % motivo(status, testo))
+    if cortex_proxy.REASONING_TOOLS_ERROR not in text.lower():
+        result["T6"] = "n/a"
+        result["note"].append("tools+reasoning: %s" % reason(status, text))
         return
 
-    status, testo = post(host, pat, json.loads(cortex_proxy.force_no_reasoning(body)))
+    status, text = post(host, pat, json.loads(cortex_proxy.force_no_reasoning(body)))
     if status == 200:
-        esito["T6"] = "OK con reasoning_effort=none"
-        esito["richiede_reasoning_none"] = True
+        result["T6"] = "OK with reasoning_effort=none"
+        result["requires_reasoning_none"] = True
     else:
-        esito["T6"] = "KO"
-        esito["note"].append("tools rifiutati anche con reasoning_effort=none")
+        result["T6"] = "KO"
+        result["note"].append("tools rejected even with reasoning_effort=none")
 
 
-def t7_context(model, dichiarato, noti, esito):
-    """T7 controllo della dichiarazione del context, non della finestra reale.
+def t7_context(model, declared, known, result):
+    """T7 check of the declared context, not of the real window.
 
-    Sondare la finestra vera significherebbe spedire centinaia di migliaia di
-    token per modello: costoso e inutile. Qui si verifica solo che il valore
-    esista e si segnala quando e' il default prudenziale, che va corretto a mano
-    dalla doc prima di considerare il modello promosso. Sottostimare e' sicuro
-    (il client comprime prima del necessario), sovrastimare rompe le chiamate.
+    Probing the real window would mean sending hundreds of thousands of tokens
+    per model: expensive and pointless. Here we only verify that the value
+    exists and flag when it is the conservative default, which must be fixed by
+    hand from the docs before considering the model promoted. Underestimating is
+    safe (the client compresses earlier than needed), overestimating breaks the
+    calls.
     """
-    if model not in noti:
-        esito["T7"] = "DA VERIFICARE"
-        esito["note"].append(
-            "modello nuovo: context da leggere su aisql-regional-availability "
-            "(il refresh mette 128000 prudenziale)")
+    if model not in known:
+        result["T7"] = "TO VERIFY"
+        result["note"].append(
+            "new model: context to be read on aisql-regional-availability "
+            "(the refresh sets a conservative 128000)")
         return
-    esito["context"] = dichiarato
-    esito["T7"] = "OK" if dichiarato and dichiarato > 0 else "KO"
+    result["context"] = declared
+    result["T7"] = "OK" if declared and declared > 0 else "KO"
 
 
 # --------------------------------------------------------------------------- #
-# verdetto
+# verdict
 # --------------------------------------------------------------------------- #
 
-def verdetto(esito):
-    if esito.get("T1") != "OK":
-        return "INCOMPATIBILE"
-    tool_ok = esito.get("T4") == "OK" or str(esito.get("T6", "")).startswith("OK")
-    if esito.get("T4") == "KO" and not str(esito.get("T6", "")).startswith("OK"):
-        return "CON RISERVA"
-    if esito.get("T4") == "INCONCLUSIVO":
-        return "CON RISERVA"
-    if esito.get("T2") == "KO" or esito.get("T3") == "KO":
-        return "CON RISERVA"
-    return "COMPATIBILE" if tool_ok else "CON RISERVA"
+def verdict(result):
+    if result.get("T1") != "OK":
+        return "INCOMPATIBLE"
+    tool_ok = result.get("T4") == "OK" or str(result.get("T6", "")).startswith("OK")
+    if result.get("T4") == "KO" and not str(result.get("T6", "")).startswith("OK"):
+        return "WITH RESERVATION"
+    if result.get("T4") == "INCONCLUSIVE":
+        return "WITH RESERVATION"
+    if result.get("T2") == "KO" or result.get("T3") == "KO":
+        return "WITH RESERVATION"
+    return "COMPATIBLE" if tool_ok else "WITH RESERVATION"
 
 
-def valuta(host, pat, model, noti):
-    esito = {"model": model, "note": []}
-    if not t1_t2_non_stream(host, pat, model, esito):
-        esito["verdetto"] = "INCOMPATIBILE"
-        return esito
-    t3_streaming(host, pat, model, esito)
-    t4_tool_roundtrip(host, pat, model, esito)
-    if esito.get("T4") in ("rinviato a T6", "KO"):
-        t6_tools_reasoning(host, pat, model, esito)
-        if str(esito.get("T6", "")).startswith("OK"):
-            # Il vincolo e' gestito dal proxy: si riprova il round-trip vero.
-            t4_tool_roundtrip(host, pat, model, esito)
-    if esito.get("T4") == "OK":
-        t5_tool_parallele(host, pat, model, esito)
-    t7_context(model, noti.get(model), noti, esito)
-    esito["verdetto"] = verdetto(esito)
-    return esito
+def evaluate(host, pat, model, known):
+    result = {"model": model, "note": []}
+    if not t1_t2_non_stream(host, pat, model, result):
+        result["verdict"] = "INCOMPATIBLE"
+        return result
+    t3_streaming(host, pat, model, result)
+    t4_tool_roundtrip(host, pat, model, result)
+    if result.get("T4") in ("deferred to T6", "KO"):
+        t6_tools_reasoning(host, pat, model, result)
+        if str(result.get("T6", "")).startswith("OK"):
+            # The constraint is handled by the proxy: retry the real round-trip.
+            t4_tool_roundtrip(host, pat, model, result)
+    if result.get("T4") == "OK":
+        t5_tool_parallel(host, pat, model, result)
+    t7_context(model, known.get(model), known, result)
+    result["verdict"] = verdict(result)
+    return result
 
 
 # --------------------------------------------------------------------------- #
-# catalogo e report
+# catalog and report
 # --------------------------------------------------------------------------- #
 
-def catalogo(connection):
-    """Nomi del catalogo, piu' la variante senza il segmento '1p-'.
+def catalog(connection):
+    """Catalog names, plus the variant without the '1p-' segment.
 
-    Il catalogo elenca OPENAI-1P-GPT-5.6-LUNA ma il nome invocabile e'
-    openai-gpt-5.6-luna: registriamo entrambe le forme e lascia decidere la
-    chiamata reale. Il catalogo elenca anche modelli che rispondono
-    'unknown model', quindi da solo non prova nulla.
+    The catalog lists OPENAI-1P-GPT-5.6-LUNA but the invocable name is
+    openai-gpt-5.6-luna: we register both forms and let the real call decide.
+    The catalog also lists models that answer 'unknown model', so on its own it
+    proves nothing.
     """
     out = subprocess.run(
         ["snow", "sql", "-c", connection, "--format", "json",
@@ -498,159 +501,167 @@ def catalogo(connection):
         capture_output=True, text=True,
     )
     if out.returncode != 0:
-        sys.stderr.write("attenzione: SHOW CORTEX BASE MODELS ha fallito, "
-                         "il diff col catalogo non sara' disponibile\n")
+        sys.stderr.write("warning: SHOW CORTEX BASE MODELS failed, "
+                         "the diff against the catalog will not be available\n")
         return {}
     try:
-        righe = json.loads(out.stdout)
+        rows = json.loads(out.stdout)
     except json.JSONDecodeError:
         return {}
-    if righe and isinstance(righe[0], list):
-        righe = righe[0]
+    if rows and isinstance(rows[0], list):
+        rows = rows[0]
 
-    trovati = {}
-    for riga in righe:
-        raw = riga.get("name") or riga.get("NAME")
+    found = {}
+    for row in rows:
+        raw = row.get("name") or row.get("NAME")
         if not raw:
             continue
-        nome = str(raw).strip().lower()
-        meta = {"status": (riga.get("lifecycle_status") or "").upper(),
-                "creato": str(riga.get("created_on") or "")[:10]}
-        trovati[nome] = meta
-        senza = re.sub(r"-1p-", "-", nome)
-        if senza != nome:
-            trovati.setdefault(senza, meta)
-    return trovati
+        name = str(raw).strip().lower()
+        meta = {"status": (row.get("lifecycle_status") or "").upper(),
+                "created": str(row.get("created_on") or "")[:10]}
+        found[name] = meta
+        without_1p = re.sub(r"-1p-", "-", name)
+        if without_1p != name:
+            found.setdefault(without_1p, meta)
+    return found
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--models", help="elenco separato da virgole")
+    p.add_argument("--models", help="comma-separated list")
     p.add_argument("--new", action="store_true",
-                   help="solo i nomi del catalogo assenti da cortex_models.json")
+                   help="only the catalog names missing from cortex_models.json")
     p.add_argument("--all", action="store_true",
-                   help="tutti i modelli in cortex_models.json (regressione)")
+                   help="all the models in cortex_models.json (regression)")
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--connection", default=DEFAULT_CONNECTION)
     p.add_argument("--jobs", type=int, default=4)
-    p.add_argument("--json", help="scrive il report anche in JSON")
+    p.add_argument("--json", help="also write the report in JSON")
     p.add_argument("--retry-ko", action="store_true",
-                   help="riprova anche i nomi già documentati in _non_disponibili")
+                   help="also retry the names already documented in _unavailable")
     args = p.parse_args()
 
     pat = os.environ.get("CORTEX_PAT", "").strip()
     if not pat:
-        sys.exit("serve il PAT: CORTEX_PAT=\"...\" in testa al comando")
+        sys.exit("the PAT is required: CORTEX_PAT=\"...\" at the head of the command")
 
     with open(MODELS_FILE) as fh:
         doc = json.load(fh)
-    noti = {str(k): int(v) for k, v in doc["models"].items()}
-    # Nomi gia' provati e non funzionanti: il catalogo ne contiene decine (modelli
-    # di embedding, parse, sentiment, versioni EOL) che non sono candidati per un
-    # provider di chat. Riprovarli ad ogni giro costa tempo e sommerge il report.
-    gia_ko = {k for k in (doc.get("_non_disponibili") or {}) if not k.startswith("_")}
+    known = {str(k): int(v) for k, v in doc["models"].items()}
+    # Names already tried and not working: the catalog contains dozens of them
+    # (embedding, parse, sentiment models, EOL versions) that are not candidates
+    # for a chat provider. Retrying them every round costs time and buries the
+    # report.
+    # "_non_disponibili" is the former Italian name of this key: a models.json
+    # copy already on the stage still uses it, and silently reading nothing there
+    # would mean retrying every dead model on every round.
+    already_ko = {
+        k
+        for k in (doc.get("_unavailable") or doc.get("_non_disponibili") or {})
+        if not k.startswith("_")
+    }
 
-    cat = catalogo(args.connection) if (args.new or not args.models) else {}
-    nuovi_tutti = sorted(n for n in cat if n not in noti)
-    scartati = {}
-    nuovi = []
-    for n in nuovi_tutti:
+    cat = catalog(args.connection) if (args.new or not args.models) else {}
+    all_new = sorted(n for n in cat if n not in known)
+    skipped = {}
+    new_models = []
+    for n in all_new:
         if cat[n]["status"] == "EOL":
-            scartati[n] = "EOL"
-        elif n in gia_ko and not args.retry_ko:
-            scartati[n] = "già documentato non disponibile"
+            skipped[n] = "EOL"
+        elif n in already_ko and not args.retry_ko:
+            skipped[n] = "already documented as unavailable"
         else:
-            nuovi.append(n)
-    spariti = sorted(n for n in noti if cat and n not in cat)
+            new_models.append(n)
+    vanished = sorted(n for n in known if cat and n not in cat)
 
     if args.models:
-        bersagli = [m.strip() for m in args.models.split(",") if m.strip()]
+        targets = [m.strip() for m in args.models.split(",") if m.strip()]
     elif args.all:
-        bersagli = sorted(noti)
+        targets = sorted(known)
     else:
-        bersagli = nuovi
+        targets = new_models
 
     print("host: %s" % args.host)
-    print("in configurazione: %d modelli" % len(noti))
+    print("in configuration: %d models" % len(known))
     if cat:
-        print("nel catalogo: %d nomi (con le varianti senza '1p-')" % len(cat))
-        print("candidati nuovi: %s"
-              % (", ".join("%s [%s, creato %s]"
-                           % (n, cat[n]["status"] or "lifecycle NULL", cat[n]["creato"])
-                           for n in nuovi) or "nessuno"))
-        if scartati:
-            print("scartati senza provarli: %d (%d EOL, %d già documentati non "
-                  "disponibili — con --retry-ko si riprovano)"
-                  % (len(scartati),
-                     sum(1 for v in scartati.values() if v == "EOL"),
-                     sum(1 for v in scartati.values() if v != "EOL")))
-        if spariti:
-            print("in configurazione ma NON piu' nel catalogo: %s" % ", ".join(spariti))
+        print("in the catalog: %d names (including the variants without '1p-')" % len(cat))
+        print("new candidates: %s"
+              % (", ".join("%s [%s, created %s]"
+                           % (n, cat[n]["status"] or "lifecycle NULL", cat[n]["created"])
+                           for n in new_models) or "none"))
+        if skipped:
+            print("discarded without trying: %d (%d EOL, %d already documented as "
+                  "unavailable — with --retry-ko they are retried)"
+                  % (len(skipped),
+                     sum(1 for v in skipped.values() if v == "EOL"),
+                     sum(1 for v in skipped.values() if v != "EOL")))
+        if vanished:
+            print("in configuration but NO longer in the catalog: %s" % ", ".join(vanished))
     if COLLAPSE is None:
-        print("\nATTENZIONE: collapse_parallel_tool_calls non e' in cortex_proxy.py.")
-        print("Il proxy e' piu' vecchio della patch sulle tool call parallele: T5")
-        print("non e' verificabile, e un'immagine costruita da questo contesto")
-        print("reintrodurrebbe il guasto.")
+        print("\nWARNING: collapse_parallel_tool_calls is not in cortex_proxy.py.")
+        print("The proxy is older than the parallel tool call patch: T5 is not")
+        print("verifiable, and an image built from this context would")
+        print("reintroduce the failure.")
 
-    if not bersagli:
-        print("\nnessun modello da valutare.")
+    if not targets:
+        print("\nno model to evaluate.")
         return 0
 
-    print("\nvaluto %d modelli: %s\n" % (len(bersagli), ", ".join(bersagli)))
+    print("\nevaluating %d models: %s\n" % (len(targets), ", ".join(targets)))
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        esiti = list(pool.map(lambda m: valuta(args.host, pat, m, noti), bersagli))
+        results = list(pool.map(lambda m: evaluate(args.host, pat, m, known), targets))
 
-    larghezza = max(len(e["model"]) for e in esiti)
+    width = max(len(e["model"]) for e in results)
     print("%-*s  %-14s %-4s %-4s %-4s %-6s %s" % (
-        larghezza, "modello", "verdetto", "T1", "T2", "T3", "T4", "dettaglio"))
-    for e in sorted(esiti, key=lambda x: (x["verdetto"], x["model"])):
-        dettaglio = e.get("motivo") or e.get("tools") or ""
+        width, "model", "verdict", "T1", "T2", "T3", "T4", "detail"))
+    for e in sorted(results, key=lambda x: (x["verdict"], x["model"])):
+        detail = e.get("reason") or e.get("tools") or ""
         if e.get("finish_upstream") and e.get("finish_upstream") != e.get("finish_proxy"):
-            dettaglio = dettaglio or ("finish_reason %s -> %s"
-                                      % (e["finish_upstream"], e["finish_proxy"]))
+            detail = detail or ("finish_reason %s -> %s"
+                                % (e["finish_upstream"], e["finish_proxy"]))
         print("%-*s  %-14s %-4s %-4s %-4s %-6s %s" % (
-            larghezza, e["model"], e["verdetto"], e.get("T1", "-"),
-            e.get("T2", "-"), e.get("T3", "-"), str(e.get("T4", "-"))[:6], dettaglio))
+            width, e["model"], e["verdict"], e.get("T1", "-"),
+            e.get("T2", "-"), e.get("T3", "-"), str(e.get("T4", "-"))[:6], detail))
 
-    # L'intestazione va stampata se c'e' QUALCOSA da dire, non solo in presenza
-    # di note: altrimenti i dettagli di un modello senza note finiscono sotto
-    # l'intestazione del modello precedente e gli vengono attribuiti.
-    for e in esiti:
-        righe = list(e["note"])
+    # The header must be printed if there is ANYTHING to say, not only when
+    # notes are present: otherwise the details of a model without notes end up
+    # under the previous model's header and get attributed to it.
+    for e in results:
+        lines = list(e["note"])
         if e.get("T5") and e["T5"] != "OK":
-            righe.append("tool call parallele: %s" % e["T5"])
+            lines.append("parallel tool calls: %s" % e["T5"])
         if e.get("T6"):
-            righe.append("tools+reasoning: %s" % e["T6"])
-        if e.get("T7") == "DA VERIFICARE":
-            righe.append("context: DA VERIFICARE a mano sulla doc")
-        if not righe:
+            lines.append("tools+reasoning: %s" % e["T6"])
+        if e.get("T7") == "TO VERIFY":
+            lines.append("context: TO BE VERIFIED by hand against the docs")
+        if not lines:
             continue
         print("\n%s:" % e["model"])
-        for riga in righe:
-            print("  - %s" % riga)
+        for line in lines:
+            print("  - %s" % line)
 
-    # Regressione: un modello che era in configurazione e non regge piu'.
-    regrediti = [e["model"] for e in esiti
-                 if e["model"] in noti and e["verdetto"] == "INCOMPATIBILE"]
-    if regrediti:
-        print("\nREGRESSIONE: %s erano in configurazione e non rispondono piu'."
-              % ", ".join(regrediti))
-        print("NON eseguire refresh_cortex_models.py --write adesso: riscrive la")
-        print("lista in base a questo giro e li rimuoverebbe. Prima capire se e' un")
-        print("guasto transitorio (riprovare) o definitivo (lato Snowflake).")
+    # Regression: a model that was in configuration and no longer holds up.
+    regressed = [e["model"] for e in results
+                 if e["model"] in known and e["verdict"] == "INCOMPATIBLE"]
+    if regressed:
+        print("\nREGRESSION: %s were in configuration and no longer respond."
+              % ", ".join(regressed))
+        print("Do NOT run refresh_cortex_models.py --write now: it rewrites the")
+        print("list based on this round and would remove them. First work out whether")
+        print("it is a transient failure (retry) or a permanent one (Snowflake side).")
 
-    promuovibili = [e["model"] for e in esiti if e["verdetto"] == "COMPATIBILE"
-                    and e["model"] not in noti]
-    if promuovibili:
-        print("\nPROMUOVIBILI: %s" % ", ".join(promuovibili))
-        print("Procedura di promozione: §15 di 20260819_hermes_desktop_client_handover.md")
+    promotable = [e["model"] for e in results if e["verdict"] == "COMPATIBLE"
+                  and e["model"] not in known]
+    if promotable:
+        print("\nPROMOTABLE: %s" % ", ".join(promotable))
+        print("Promotion procedure: §15 of 20260819_hermes_desktop_client_handover.md")
 
     if args.json:
         with open(args.json, "w") as fh:
-            json.dump(esiti, fh, indent=2, ensure_ascii=False)
-        print("\nreport JSON in %s" % args.json)
+            json.dump(results, fh, indent=2, ensure_ascii=False)
+        print("\nJSON report in %s" % args.json)
 
-    return 1 if regrediti else 0
+    return 1 if regressed else 0
 
 
 if __name__ == "__main__":

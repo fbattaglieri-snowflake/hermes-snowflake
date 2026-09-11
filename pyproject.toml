@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
-testpaths = ["proxy", "tooling"]
+testpaths = ["proxy", "tooling", "tests"]
 python_files = ["test_*.py"]
 
 [tool.ruff]

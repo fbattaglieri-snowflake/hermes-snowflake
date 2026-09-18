@@ -17,3 +17,4 @@ This process is provided on a best-effort basis and does not create a warranty, 
 - The Hermes Dashboard uses cookie-based authentication with a bcrypt/scrypt password hash. The plaintext password is never stored.
 - Pull request workflows never receive deployment permissions or secrets.
 - Deployment requires manual approval by the repository maintainer.
+- Every pull request builds the container image and scans it. The gate blocks on vulnerabilities this repository can fix and reports the rest without blocking, so that a red build always means there is an action to take. See [docs/security.md](docs/security.md#container-image-vulnerability-gate).

@@ -57,6 +57,21 @@ jobs:
           tags: hermes-snowflake:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The blocking scan covers what this repository can actually fix, so that
+      # a red build always means there is an action to take.
+      #
+      # Excluded are the artifacts we consume rather than produce: the Hermes
+      # agent tree and its seed, whose dependencies are resolved from the
+      # upstream uv.lock at the pinned HERMES_GIT_SHA, and the Ollama,
+      # cloudflared and Tailscale binaries, which upstream ships already
+      # compiled — their Go dependencies change only when upstream rebuilds, so
+      # the lever is the version pin, not a package override. Unfixed
+      # vulnerabilities are excluded too: Ubuntu kernel headers routinely carry
+      # CVEs with no released fix, and blocking on those makes every build red
+      # regardless of what we change.
+      #
+      # The advisory scan that follows covers the whole image and never fails,
+      # so the excluded debt stays visible on every run instead of disappearing.
       - name: Scan built image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
@@ -64,20 +79,27 @@ jobs:
           image-ref: hermes-snowflake:test
           scanners: vuln
           format: json
-          output: trivy-report.json
+          output: trivy-blocking.json
           severity: CRITICAL,HIGH
+          ignore-unfixed: "true"
+          skip-dirs: usr/local/lib/hermes-agent,opt/hermes-seed
+          skip-files: usr/local/bin/ollama,usr/local/bin/cloudflared,usr/local/bin/tailscale,usr/local/bin/tailscaled
           exit-code: "1"
+      - name: Scan built image including vendored dependencies
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: hermes-snowflake:test
+          scanners: vuln
+          format: json
+          output: trivy-advisory.json
+          severity: CRITICAL,HIGH
+          exit-code: "0"
       - name: Summarize image findings
         if: always()
         run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          report = Path('trivy-report.json')
-          if report.exists():
-              data = json.loads(report.read_text())
-              for result in data.get('Results', []):
-                  findings = {(v['PkgName'], v['InstalledVersion'], v.get('FixedVersion', ''), v.get('PkgPath', '')) for v in result.get('Vulnerabilities', [])}
-                  for finding in sorted(findings):
-                      print(json.dumps({'target': result['Target'], 'package': finding}))
-          PY
+          python3 scripts/summarize_trivy.py trivy-blocking.json \
+            --title "Blocking findings — hermes-snowflake:test"
+          python3 scripts/summarize_trivy.py trivy-advisory.json \
+            --title "All findings including vendored and unfixed — hermes-snowflake:test"

@@ -10,7 +10,9 @@ python3 -m py_compile \
   tooling/refresh_cortex_models.py \
   tooling/cortex_wire_check.py \
   docker/hermes/hermes_configure.py \
-  docker/hermes/migrate_soul.py
+  docker/hermes/migrate_soul.py \
+  docker/hermes/assert_python_floors.py \
+  scripts/summarize_trivy.py
 python3 -m ruff check proxy tooling docker/hermes scripts tests
 python3 -m pytest proxy tests -q
 python3 -m json.tool proxy/models.json >/dev/null

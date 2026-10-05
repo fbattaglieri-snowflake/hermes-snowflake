@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Proxy OpenAI-compatible -> Snowflake Cortex, per uso dentro SPCS.
+OpenAI-compatible proxy -> Snowflake Cortex, for use inside SPCS.
 
-Perché serve: da SPCS l'unica auth accettata dal Cortex REST API e' OAuth con
-il session token, e richiede l'header X-Snowflake-Authorization-Token-Type: OAUTH.
-I client OpenAI standard (Hermes incluso) inviano solo "Authorization: Bearer <key>",
-quindi questo proxy riscrive gli header e inoltra la richiesta.
+Why it is needed: from SPCS the only auth accepted by the Cortex REST API is OAuth
+with the session token, and it requires the X-Snowflake-Authorization-Token-Type:
+OAUTH header. Standard OpenAI clients (Hermes included) only send
+"Authorization: Bearer <key>", so this proxy rewrites the headers and forwards
+the request.
 
-Bonus: rilegge /snowflake/session/token ad ogni richiesta, quindi il token
-non scade mai (SPCS lo rinnova automaticamente sul filesystem).
+Bonus: it re-reads /snowflake/session/token on every request, so the token never
+expires (SPCS renews it automatically on the filesystem).
 
-Uso:
+Usage:
     nohup python3 /root/.hermes/cortex_proxy.py > /tmp/cortex_proxy.log 2>&1 &
 
-Poi puntare il client a http://127.0.0.1:8080/v1
+Then point the client at http://127.0.0.1:8080/v1
 """
 import json
 import os
@@ -29,20 +30,20 @@ CORTEX_BASE = "https://%s/api/v2/cortex/v1" % SNOWFLAKE_HOST
 SQL_API_PATH = "/api/v2/statements"
 TOKEN_PATH = "/snowflake/session/token"  # noqa: S105
 
-# Bind configurabile: 127.0.0.1 dentro il container di Hermes (il client e' locale),
-# 0.0.0.0 quando il proxy gira come servizio SPCS a se' stante e deve essere
-# raggiungibile da altri servizi via DNS interno.
+# Configurable bind: 127.0.0.1 inside the Hermes container (the client is local),
+# 0.0.0.0 when the proxy runs as a standalone SPCS service and must be reachable
+# from other services via internal DNS.
 LISTEN_ADDR = (
     os.environ.get("CORTEX_PROXY_BIND", "127.0.0.1"),
     int(os.environ.get("CORTEX_PROXY_PORT", "8080")),
 )
 
-# Sorgente unica dei modelli, condivisa con hermes_configure.py: se le due liste
-# divergessero, Hermes dichiarerebbe un context length diverso da quello annunciato
-# qui su /v1/models. Vedi cortex_models.json per l'elenco e le verifiche.
+# Single source of truth for the models, shared with hermes_configure.py: if the two
+# lists diverged, Hermes would declare a context length different from the one
+# announced here on /v1/models. See cortex_models.json for the list and the checks.
 #
-# Si cercano in ordine: percorso esplicito, volume da stage Snowflake (aggiornabile
-# con un PUT, senza rebuild dell'immagine), copia dentro l'immagine come fallback.
+# They are looked up in order: explicit path, volume from a Snowflake stage (updatable
+# with a PUT, without rebuilding the image), copy inside the image as a fallback.
 MODELS_PATHS = [
     p
     for p in (
@@ -53,16 +54,16 @@ MODELS_PATHS = [
     if p
 ]
 
-# Fallback minimo se nessun file e' leggibile: meglio due modelli certi che nessuno.
+# Minimal fallback if no file is readable: better two known-good models than none.
 FALLBACK_MODELS = {"claude-sonnet-5": 1000000, "claude-opus-5": 1000000}
 
-# Cache del file: rileggiamo solo quando cambia mtime, cosi' un aggiornamento dello
-# stage viene raccolto senza riavviare il servizio e senza rileggere ad ogni richiesta.
+# File cache: we re-read only when the mtime changes, so a stage update is picked up
+# without restarting the service and without re-reading on every request.
 _models_cache = {"path": None, "mtime": None, "models": None, "no_reasoning": None}
 
 
 def _read_models_file():
-    """Ritorna (models, tools_require_reasoning_effort_none) dal primo file leggibile."""
+    """Return (models, tools_require_reasoning_effort_none) from the first readable file."""
     for path in MODELS_PATHS:
         try:
             stat = os.stat(path)
@@ -80,14 +81,14 @@ def _read_models_file():
                 continue
             no_reasoning = set(data.get("tools_require_reasoning_effort_none") or [])
         except Exception as err:
-            sys.stderr.write("%s illeggibile (%s), provo il prossimo\n" % (path, err))
+            sys.stderr.write("%s unreadable (%s), trying the next one\n" % (path, err))
             continue
 
         _models_cache.update(
             path=path, mtime=stat.st_mtime, models=models, no_reasoning=no_reasoning
         )
         sys.stderr.write(
-            "elenco modelli caricato da %s (%d modelli)\n" % (path, len(models))
+            "model list loaded from %s (%d models)\n" % (path, len(models))
         )
         sys.stderr.flush()
         return models, no_reasoning
@@ -105,7 +106,7 @@ def tools_need_no_reasoning():
     return _read_models_file()[1]
 
 
-# Messaggio con cui Cortex rifiuta tools+reasoning: usato per il retry adattivo.
+# Message with which Cortex rejects tools+reasoning: used for the adaptive retry.
 REASONING_TOOLS_ERROR = "function tools with reasoning_effort"
 
 
@@ -120,10 +121,10 @@ CONTEXT_KEYS = (
 
 
 def model_entry(name, context_length):
-    """Descrittore modello con tutti gli alias di context length noti a Hermes.
+    """Model descriptor with every context length alias known to Hermes.
 
-    Hermes prova 12 chiavi diverse in ordine; ne pubblichiamo le principali
-    cosi' il probe trova il valore corretto qualunque alias cerchi.
+    Hermes tries 12 different keys in order; we publish the main ones so the
+    probe finds the correct value whichever alias it looks for.
     """
     entry = {
         "id": name,
@@ -137,11 +138,11 @@ def model_entry(name, context_length):
 
 
 def _has_context_length(raw):
-    """True se una risposta /v1/models upstream dichiara il context length.
+    """True if an upstream /v1/models response declares the context length.
 
-    Senza almeno uno degli alias che Hermes cerca, la lista upstream sarebbe una
-    regressione rispetto al nostro file: Hermes non saprebbe la finestra dei
-    modelli e tornerebbe a stimarla male.
+    Without at least one of the aliases Hermes looks for, the upstream list would
+    be a regression compared to our file: Hermes would not know the models'
+    window and would go back to estimating it badly.
     """
     try:
         data = (json.loads(raw) or {}).get("data") or []
@@ -153,42 +154,41 @@ def _has_context_length(raw):
 
 
 def read_token():
-    """Rilegge il token ad ogni chiamata: SPCS lo ruota sul filesystem."""
+    """Re-read the token on every call: SPCS rotates it on the filesystem."""
     with open(TOKEN_PATH) as fh:
         return fh.read().strip()
 
 
 def adapt_payload(payload):
-    """Adatta il body OpenAI alle differenze del wire Cortex.
+    """Adapt the OpenAI body to the differences of the Cortex wire format.
 
-    1) Cortex rifiuta 'max_tokens' con HTTP 400 "max_tokens is deprecated in favor
-    of max_completion_tokens". Hermes invia 'max_tokens' per tutti i modelli che
-    non appartengono alle famiglie OpenAI (vedi model_forces_max_completion_tokens
-    in utils.py), quindi per claude-*, mistral-*, qwen3-* e simili la richiesta
-    fallirebbe sempre. Hermes interpreta poi quel 400 come overflow di contesto e
-    riporta il fuorviante "Context length exceeded (N tokens)".
+    1) Cortex rejects 'max_tokens' with HTTP 400 "max_tokens is deprecated in favor
+    of max_completion_tokens". Hermes sends 'max_tokens' for every model that does
+    not belong to the OpenAI families (see model_forces_max_completion_tokens
+    in utils.py), so for claude-*, mistral-*, qwen3-* and the like the request
+    would always fail. Hermes then interprets that 400 as a context overflow and
+    reports the misleading "Context length exceeded (N tokens)".
 
-    2) I modelli gpt-5.6-* rifiutano 'tools' se reasoning_effort non e'
-    esplicitamente "none": "Function tools with reasoning_effort are not
-    supported". Ometterlo NON basta, il gateway applica un default. Senza questa
-    riscrittura quei modelli non possono usare strumenti, cioe' sono inutili per
-    un agente.
+    2) The gpt-5.6-* models reject 'tools' if reasoning_effort is not explicitly
+    "none": "Function tools with reasoning_effort are not supported". Omitting it
+    is NOT enough, the gateway applies a default. Without this rewrite those
+    models cannot use tools, that is, they are useless for an agent.
 
-    Nessuna di queste due cose e' configurabile lato Hermes: e' il motivo per cui
-    questo proxy esiste.
+    Neither of these two things is configurable on the Hermes side: that is why
+    this proxy exists.
     """
     if not payload:
         return payload, None
     try:
         body = json.loads(payload)
     except (ValueError, TypeError):
-        return payload, None  # non-JSON: inoltra invariato
+        return payload, None  # non-JSON: forward unchanged
     if not isinstance(body, dict):
         return payload, None
 
     if "max_tokens" in body:
         value = body.pop("max_tokens")
-        # Se il client ha già inviato la chiave nuova, la sua vince.
+        # If the client already sent the new key, its value wins.
         body.setdefault("max_completion_tokens", value)
 
     collapse_parallel_tool_calls(body)
@@ -201,18 +201,18 @@ def adapt_payload(payload):
 
 
 def collapse_parallel_tool_calls(body):
-    """Collassa i turni con piu' di una tool call: Cortex li rifiuta.
+    """Collapse turns with more than one tool call: Cortex rejects them.
 
-    Cortex converte ogni messaggio 'tool' in un turno separato, quindi una
-    assistant con N toolUse riceve 1 solo toolResult nel primo turno e la
-    richiesta muore con HTTP 400 "Each 'toolUse' block must be accompanied
-    with a matching 'toolResult' block", non ritentabile.
+    Cortex converts every 'tool' message into a separate turn, so an assistant
+    message with N toolUse blocks receives only 1 toolResult in the first turn and
+    the request dies with HTTP 400 "Each 'toolUse' block must be accompanied
+    with a matching 'toolResult' block", which is not retryable.
 
-    Il turno resta nella history persistita, quindi il guasto e' permanente:
-    ogni messaggio successivo della stessa sessione fallisce.
+    The turn stays in the persisted history, so the failure is permanent: every
+    subsequent message in the same session fails.
 
-    Teniamo la prima tool call e fondiamo gli output delle altre nel suo
-    toolResult come testo: il vincolo 1:1 e' rispettato e non si perde nulla.
+    We keep the first tool call and merge the outputs of the others into its
+    toolResult as text: the 1:1 constraint is respected and nothing is lost.
     """
     msgs = body.get("messages")
     if not isinstance(msgs, list):
@@ -240,7 +240,7 @@ def collapse_parallel_tool_calls(body):
         merged = dict(first)
         extra = [str(results[k].get("content")) for k in ids[1:] if k in results]
         if extra:
-            nota = "[output di tool call parallele, fusi dal proxy]"
+            nota = "[output of parallel tool calls, merged by the proxy]"
             merged["content"] = "\n\n".join(
                 [str(first.get("content")), nota] + extra
             )
@@ -254,31 +254,31 @@ def collapse_parallel_tool_calls(body):
 
 
 def force_no_reasoning(body):
-    """Riscrive il body per il retry: reasoning_effort esplicitamente disattivato."""
+    """Rewrite the body for the retry: reasoning_effort explicitly disabled."""
     body = dict(body)
     body["reasoning_effort"] = "none"
     return json.dumps(body).encode()
 
 
 def infer_finish_reason(choice, requested_max, usage):
-    """Deduce il finish_reason che Cortex non manda, invece di forzare 'stop'.
+    """Infer the finish_reason that Cortex does not send, instead of forcing 'stop'.
 
-    Cortex collassa tre casi distinti in "": risposta completa, tool call e
-    risposta troncata dal limite di token. Forzare 'stop' su tutti e tre e' lossy
-    in due modi, entrambi osservati:
+    Cortex collapses three distinct cases into "": complete response, tool call and
+    response truncated by the token limit. Forcing 'stop' on all three is lossy
+    in two ways, both observed:
 
-      - un client che ramifica su finish_reason == 'tool_calls' non esegue il
-        tool. Il messaggio assistant col blocco toolUse finisce comunque in
-        history, che resta senza il toolResult corrispondente: la richiesta
-        successiva viene rifiutata con HTTP 400 "Each 'toolUse' block must be
-        accompanied with a matching 'toolResult' block". E' il motivo per cui il
-        tool calling non funzionava sui modelli Claude.
-      - una risposta tagliata a metà dal limite di token viene marcata come
-        completa, quindi un workflow puo' trattare mezza frase come definitiva.
+      - a client that branches on finish_reason == 'tool_calls' does not run the
+        tool. The assistant message with the toolUse block ends up in the history
+        anyway, which is left without the corresponding toolResult: the next
+        request is rejected with HTTP 400 "Each 'toolUse' block must be
+        accompanied with a matching 'toolResult' block". That is why tool calling
+        did not work on the Claude models.
+      - a response cut in half by the token limit is marked as complete, so a
+        workflow may treat half a sentence as final.
 
-    message.tool_calls e usage.completion_tokens permettono di ricostruire due
-    dei tre casi. Restano indistinguibili content_filter e refusal, casi rari:
-    si passa da "sbaglio sempre" a "sbaglio raramente".
+    message.tool_calls and usage.completion_tokens make it possible to reconstruct
+    two of the three cases. content_filter and refusal remain indistinguishable,
+    which are rare cases: we go from "always wrong" to "rarely wrong".
     """
     if (choice.get("message") or {}).get("tool_calls"):
         return "tool_calls"
@@ -289,12 +289,12 @@ def infer_finish_reason(choice, requested_max, usage):
 
 
 def normalize_finish_reason(raw, requested_max=None):
-    """Valorizza finish_reason dove Cortex lo lascia vuoto (risposte non-stream).
+    """Fill in finish_reason where Cortex leaves it empty (non-stream responses).
 
-    Cortex restituisce "finish_reason": "" per i modelli Claude (per gpt-5.6 invece
-    manda "stop"). I client OpenAI leggono quel campo per due decisioni distinte:
-    se la risposta e' completa, e se devono eseguire un tool. Vedi
-    infer_finish_reason per il dettaglio dei casi.
+    Cortex returns "finish_reason": "" for the Claude models (for gpt-5.6 it sends
+    "stop" instead). OpenAI clients read that field for two distinct decisions:
+    whether the response is complete, and whether they must run a tool. See
+    infer_finish_reason for the details of the cases.
     """
     try:
         obj = json.loads(raw)
@@ -312,11 +312,11 @@ def normalize_finish_reason(raw, requested_max=None):
 
 
 def stop_chunk(model, reason="stop"):
-    """Chunk SSE sintetico che chiude lo stream secondo lo spec OpenAI.
+    """Synthetic SSE chunk that closes the stream according to the OpenAI spec.
 
-    reason va impostato a 'tool_calls' se qualche delta ha portato una tool call,
-    altrimenti il client non la esegue (vedi infer_finish_reason). In streaming
-    'length' non e' deducibile: i chunk SSE di Cortex non portano usage.
+    reason must be set to 'tool_calls' if any delta carried a tool call,
+    otherwise the client does not run it (see infer_finish_reason). In streaming
+    'length' cannot be inferred: Cortex's SSE chunks do not carry usage.
     """
     payload = {
         "id": "",
@@ -329,22 +329,22 @@ def stop_chunk(model, reason="stop"):
 
 
 def reindex_tool_calls(obj, state):
-    """Riscrive l'indice dei delta tool_calls in streaming.
+    """Rewrite the index of the streaming tool_calls deltas.
 
-    Sui modelli Claude, Cortex marca TUTTE le tool call parallele con index 0.
-    Misurato il 2026-08-18 su claude-sonnet-5, due tool call in un turno:
-    sette frammenti, tutti con index 0, il secondo 'id' compare al frammento 4
-    sempre su index 0. Il client riassembla per indice, fonde le due chiamate
-    in una sola, esegue un tool e rimanda un solo toolResult per due toolUse:
-    Cortex rifiuta la richiesta successiva con HTTP 400
+    On the Claude models, Cortex marks ALL parallel tool calls with index 0.
+    Measured on 2026-08-18 on claude-sonnet-5, two tool calls in one turn:
+    seven fragments, all with index 0, the second 'id' appears at fragment 4
+    still on index 0. The client reassembles by index, merges the two calls
+    into one, runs a single tool and sends back one toolResult for two toolUse
+    blocks: Cortex rejects the next request with HTTP 400
     "Each 'toolUse' block must be accompanied with a matching 'toolResult'".
 
-    Un frammento con 'id' non vuoto apre una nuova tool call, i successivi
-    portano solo il pezzo di arguments con id e name vuoti. Contiamo gli id
-    distinti e usiamo il contatore come indice. Il confronto con last_id rende
-    l'operazione idempotente: sui modelli che gia' indicizzano correttamente
-    (verificato su openai-gpt-5.2, indici [0, 1]) gli indici ricalcolati
-    coincidono con quelli originali e nulla viene toccato.
+    A fragment with a non-empty 'id' opens a new tool call, the following ones
+    carry only the arguments chunk with empty id and name. We count the distinct
+    ids and use the counter as the index. Comparing against last_id makes the
+    operation idempotent: on the models that already index correctly
+    (verified on openai-gpt-5.2, indexes [0, 1]) the recomputed indexes
+    match the original ones and nothing is touched.
     """
     changed = False
     for choice in obj.get("choices") or []:
@@ -365,10 +365,10 @@ def reindex_tool_calls(obj, state):
 
 
 def normalize_stream(raw_bytes):
-    """Processa SSE raw bytes: inietta stop_chunk se mancante, reindexta tool calls.
+    """Process raw SSE bytes: inject stop_chunk if missing, reindex tool calls.
 
-    Usato dai test; in produzione la stessa logica gira riga per riga nel handler
-    per non bufferizzare l'intero stream.
+    Used by the tests; in production the same logic runs line by line in the
+    handler so the whole stream is not buffered.
     """
     lines = raw_bytes.split(b"\n")
     out = []
@@ -410,10 +410,10 @@ def normalize_stream(raw_bytes):
 
 
 def upstream_path(client_path):
-    """Normalizza il path del client verso l'endpoint Cortex.
+    """Normalize the client path towards the Cortex endpoint.
 
-    Il client puo' chiamare /v1/chat/completions o /chat/completions:
-    in entrambi i casi l'upstream e' <CORTEX_BASE>/chat/completions.
+    The client may call /v1/chat/completions or /chat/completions:
+    in both cases the upstream is <CORTEX_BASE>/chat/completions.
     """
     path = client_path
     if path.startswith("/v1/"):
@@ -428,7 +428,7 @@ def upstream_path(client_path):
 class CortexProxy(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):  # silenzia access log
+    def log_message(self, fmt, *args):  # silences the access log
         pass
 
     def _send_body(self, status, body, content_type="application/json"):
@@ -470,7 +470,7 @@ class CortexProxy(BaseHTTPRequestHandler):
         return urllib.request.urlopen(request)  # noqa: S310
 
     def _upstream_get(self, timeout=15):
-        """GET verso Cortex. Serve perche' _upstream e' fissato su POST."""
+        """GET towards Cortex. Needed because _upstream is pinned to POST."""
         request = urllib.request.Request(  # noqa: S310
             upstream_path(self.path),
             headers={
@@ -516,10 +516,10 @@ class CortexProxy(BaseHTTPRequestHandler):
             err_body = err.read()
             text = err_body.decode("utf-8", "replace")
 
-            # Retry adattivo: alcuni modelli reasoning rifiutano 'tools' se
-            # reasoning_effort non e' esplicitamente "none". La lista in
-            # cortex_models.json copre quelli noti; questo ramo copre i futuri
-            # senza doverla aggiornare.
+            # Adaptive retry: some reasoning models reject 'tools' if
+            # reasoning_effort is not explicitly "none". The list in
+            # cortex_models.json covers the known ones; this branch covers future
+            # ones without having to update it.
             if (
                 err.code == 400
                 and body is not None
@@ -528,7 +528,7 @@ class CortexProxy(BaseHTTPRequestHandler):
                 and REASONING_TOOLS_ERROR in text.lower()
             ):
                 sys.stderr.write(
-                    "retry con reasoning_effort=none per il modello %r\n"
+                    "retrying with reasoning_effort=none for model %r\n"
                     % body.get("model")
                 )
                 sys.stderr.flush()
@@ -537,7 +537,7 @@ class CortexProxy(BaseHTTPRequestHandler):
                 except urllib.error.HTTPError as err2:
                     body2 = err2.read()
                     sys.stderr.write(
-                        "retry fallito HTTP %s: %s\n"
+                        "retry failed HTTP %s: %s\n"
                         % (err2.code, body2[:400].decode("utf-8", "replace"))
                     )
                     sys.stderr.flush()
@@ -549,15 +549,15 @@ class CortexProxy(BaseHTTPRequestHandler):
                     )
                     return
             else:
-                # Il messaggio di Cortex e' l'unico indizio utile quando il wire
-                # OpenAI e quello Cortex divergono: va sempre registrato.
+                # Cortex's message is the only useful clue when the OpenAI wire
+                # format and the Cortex one diverge: it must always be logged.
                 sys.stderr.write(
-                    "upstream HTTP %s su %s: %s\n" % (err.code, self.path, text[:500])
+                    "upstream HTTP %s on %s: %s\n" % (err.code, self.path, text[:500])
                 )
                 sys.stderr.flush()
                 self._send_body(err.code, err_body)
                 return
-        except Exception as err:  # rete, DNS, TLS
+        except Exception as err:  # network, DNS, TLS
             self._send_body(
                 502, json.dumps({"error": {"message": str(err)}}).encode()
             )
@@ -566,15 +566,15 @@ class CortexProxy(BaseHTTPRequestHandler):
         content_type = response.headers.get("Content-Type", "application/json")
         model = (body or {}).get("model") if isinstance(body, dict) else None
 
-        # Streaming SSE: inoltra riga per riga (SSE e' line-delimited).
+        # SSE streaming: forward line by line (SSE is line-delimited).
         if "text/event-stream" in content_type:
             self.send_response(response.status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            # Senza questo il server terrebbe la connessione keep-alive: il body
-            # non ha Content-Length, quindi il client non saprebbe dove finisce.
+            # Without this the server would keep the connection alive: the body
+            # has no Content-Length, so the client would not know where it ends.
             self.close_connection = True
 
             saw_finish = False
@@ -590,14 +590,14 @@ class CortexProxy(BaseHTTPRequestHandler):
                     if stripped.startswith(b"data:"):
                         chunk = stripped[5:].strip()
                         if chunk == b"[DONE]":
-                            # Cortex non manda mai un chunk con finish_reason: lo
-                            # spec OpenAI lo richiede sull'ultimo, e senza di esso
-                            # il client considera la risposta troncata e tenta
-                            # continuazioni (testo duplicato). Lo iniettiamo qui,
-                            # con 'tool_calls' se lo stream ne ha portata una:
-                            # altrimenti il client non esegue il tool e lascia in
-                            # history un toolUse orfano, che Cortex rifiuta alla
-                            # richiesta dopo.
+                            # Cortex never sends a chunk with finish_reason: the
+                            # OpenAI spec requires it on the last one, and without
+                            # it the client considers the response truncated and
+                            # attempts continuations (duplicated text). We inject
+                            # it here, with 'tool_calls' if the stream carried one:
+                            # otherwise the client does not run the tool and leaves
+                            # an orphan toolUse in the history, which Cortex
+                            # rejects on the next request.
                             if not saw_finish:
                                 self.wfile.write(
                                     stop_chunk(
@@ -644,35 +644,35 @@ class CortexProxy(BaseHTTPRequestHandler):
         )
 
     def do_GET(self):
-        # Alcuni client interrogano /v1/models in fase di handshake, altri
-        # chiedono il singolo modello con /v1/models/<id>.
+        # Some clients query /v1/models during the handshake, others ask for the
+        # single model with /v1/models/<id>.
         path = self.path.rstrip("/")
 
         if path.endswith("/models") or path.endswith("/v1/models"):
-            # Oggi Cortex risponde 404 su /v1/models e serviamo il nostro file.
-            # Ma se un giorno lo implementasse, continuare a servire il file
-            # nasconderebbe i modelli nuovi *senza alcun errore*: il guasto
-            # peggiore, perche' sembra tutto sano. Quindi si prova prima
-            # l'upstream e si ripiega sul file solo se non risponde.
+            # Today Cortex answers 404 on /v1/models and we serve our own file.
+            # But if one day it implemented it, continuing to serve the file
+            # would hide the new models *without any error*: the worst kind of
+            # failure, because everything looks healthy. So we try the upstream
+            # first and fall back to the file only if it does not answer.
             try:
                 upstream = self._upstream_get()
                 if upstream.status == 200:
                     body = upstream.read()
-                    # Il nostro model_entry pubblica il context length sotto sei
-                    # chiavi diverse perche' i client lo cercano sotto nomi
-                    # diversi. Se l'upstream non ne pubblica nessuna utile,
-                    # Hermes tornerebbe a sbagliare il context: in quel caso
-                    # meglio il file nostro, che quel dato lo ha verificato.
+                    # Our model_entry publishes the context length under six
+                    # different keys because clients look for it under different
+                    # names. If the upstream publishes none of the useful ones,
+                    # Hermes would go back to getting the context wrong: in that
+                    # case our file is better, since that value was verified.
                     if _has_context_length(body):
                         self._send_body(200, body)
                         return
                     sys.stderr.write(
-                        "upstream /v1/models risponde ma senza context length: "
-                        "uso il file locale\n"
+                        "upstream /v1/models answers but without context length: "
+                        "using the local file\n"
                     )
                     sys.stderr.flush()
             except Exception:  # noqa: S110
-                pass  # 404, rete, TLS: comportamento storico
+                pass  # 404, network, TLS: historical behaviour
 
             models = [
                 model_entry(name, ctx) for name, ctx in cortex_models().items()
@@ -694,11 +694,11 @@ class CortexProxy(BaseHTTPRequestHandler):
 
 
 def selftest(base):
-    """Verifica a caldo dopo l'avvio: l'esito finisce nei log del servizio.
+    """Hot check after startup: the outcome ends up in the service logs.
 
-    Serve perche' quando il proxy gira come servizio SPCS con endpoint interno non
-    e' raggiungibile da fuori: SYSTEM$GET_SERVICE_LOGS e' l'unico modo di sapere
-    se funziona senza passare da un altro container.
+    Needed because when the proxy runs as an SPCS service with an internal endpoint
+    it is not reachable from outside: SYSTEM$GET_SERVICE_LOGS is the only way to
+    know whether it works without going through another container.
     """
     import time
     import urllib.request as ur
@@ -713,15 +713,15 @@ def selftest(base):
             body = ""
             if isinstance(err, urllib.error.HTTPError):
                 body = " body=" + err.read()[:200].decode("utf-8", "replace")
-            print("SELFTEST %s: FALLITO (%s)%s" % (label, err, body), flush=True)
+            print("SELFTEST %s: FAILED (%s)%s" % (label, err, body), flush=True)
 
     modelli = cortex_models()
-    print("SELFTEST modelli dichiarati: %d" % len(modelli), flush=True)
+    print("SELFTEST declared models: %d" % len(modelli), flush=True)
 
     check("/v1/models", lambda: ur.urlopen(base + "/models", timeout=30).read())
 
-    # Il payload usa max_tokens: se torna 200, la traduzione in
-    # max_completion_tokens sta funzionando (Cortex lo rifiuterebbe).
+    # The payload uses max_tokens: if it returns 200, the translation into
+    # max_completion_tokens is working (Cortex would reject it).
     modello = "claude-sonnet-5" if "claude-sonnet-5" in modelli else sorted(modelli)[0]
     payload = json.dumps(
         {
@@ -741,24 +741,24 @@ def selftest(base):
         raw = ur.urlopen(req, timeout=90).read()
         reason = (json.loads(raw).get("choices") or [{}])[0].get("finish_reason")
         if reason != "stop":
-            raise RuntimeError("finish_reason=%r, atteso 'stop'" % reason)
+            raise RuntimeError("finish_reason=%r, expected 'stop'" % reason)
 
-    check("chat/completions con max_tokens su %s" % modello, chat)
+    check("chat/completions with max_tokens on %s" % modello, chat)
 
-    # Il caso che il fix del 2026-08-18 indirizza: con una tool call il
-    # finish_reason deve essere 'tool_calls', non 'stop'. Se torna 'stop' il
-    # client non esegue il tool e lascia in history un toolUse orfano, che
-    # Cortex rifiuta alla richiesta successiva con HTTP 400.
+    # The case that the 2026-08-18 fix addresses: with a tool call the
+    # finish_reason must be 'tool_calls', not 'stop'. If it returns 'stop' the
+    # client does not run the tool and leaves an orphan toolUse in the history,
+    # which Cortex rejects on the next request with HTTP 400.
     tool_payload = {
         "model": modello,
-        "messages": [{"role": "user", "content": "Che tempo fa a Milano?"}],
+        "messages": [{"role": "user", "content": "What is the weather in Milan?"}],
         "max_tokens": 256,
         "tools": [
             {
                 "type": "function",
                 "function": {
                     "name": "get_weather",
-                    "description": "Meteo corrente per una citta'",
+                    "description": "Current weather for a city",
                     "parameters": {
                         "type": "object",
                         "properties": {"city": {"type": "string"}},
@@ -787,13 +787,13 @@ def selftest(base):
             reason = choice.get("finish_reason")
             if not (choice.get("message") or {}).get("tool_calls"):
                 raise RuntimeError(
-                    "il modello non ha invocato il tool (finish_reason=%r)" % reason
+                    "the model did not invoke the tool (finish_reason=%r)" % reason
                 )
             if reason != "tool_calls":
-                raise RuntimeError("finish_reason=%r, atteso 'tool_calls'" % reason)
+                raise RuntimeError("finish_reason=%r, expected 'tool_calls'" % reason)
             return
 
-        # Streaming: l'ultimo chunk con finish_reason deve dire 'tool_calls'.
+        # Streaming: the last chunk with finish_reason must say 'tool_calls'.
         reasons = []
         for line in raw.split(b"\n"):
             line = line.strip()
@@ -809,24 +809,24 @@ def selftest(base):
             except (ValueError, TypeError):
                 pass
         if reasons[-1:] != ["tool_calls"]:
-            raise RuntimeError("finish_reason di chiusura=%r, atteso 'tool_calls'" % reasons[-1:])
+            raise RuntimeError("closing finish_reason=%r, expected 'tool_calls'" % reasons[-1:])
 
-    check("tool calling non-stream su %s" % modello, lambda: tool_call(False))
-    check("tool calling streaming su %s" % modello, lambda: tool_call(True))
+    check("non-stream tool calling on %s" % modello, lambda: tool_call(False))
+    check("streaming tool calling on %s" % modello, lambda: tool_call(True))
 
     def parallel_tool_calls():
-        """Due tool call in un turno: Cortex le manda tutte con index 0.
+        """Two tool calls in one turn: Cortex sends them all with index 0.
 
-        Senza reindex_tool_calls il client le fonde in una, esegue un tool solo
-        e lascia un toolUse orfano che fa fallire la richiesta dopo con 400.
+        Without reindex_tool_calls the client merges them into one, runs only one
+        tool and leaves an orphan toolUse that makes the next request fail with 400.
         """
         body = dict(
             tool_payload,
             stream=True,
             messages=[{
                 "role": "user",
-                "content": "Dammi il meteo di Roma E di Milano. "
-                           "Chiama get_weather una volta per ogni citta.",
+                "content": "Give me the weather for Rome AND for Milan. "
+                           "Call get_weather once for each city.",
             }],
         )
         req = ur.Request(
@@ -862,30 +862,30 @@ def selftest(base):
 
         if len(ids) < 2:
             raise RuntimeError(
-                "il modello ha invocato %d tool call, servono 2 per il test"
+                "the model invoked %d tool calls, 2 are needed for the test"
                 % len(ids)
             )
         atteso = set(range(len(ids)))
         if indici != atteso:
             raise RuntimeError(
-                "%d tool call ma indici %s, attesi %s"
+                "%d tool calls but indexes %s, expected %s"
                 % (len(ids), sorted(indici), sorted(atteso))
             )
 
-    check("tool call parallele su %s" % modello, parallel_tool_calls)
+    check("parallel tool calls on %s" % modello, parallel_tool_calls)
 
 
 def main():
     if not os.path.exists(TOKEN_PATH):
-        sys.exit("session token non trovato in %s (fuori da SPCS?)" % TOKEN_PATH)
+        sys.exit("session token not found at %s (outside SPCS?)" % TOKEN_PATH)
 
     host, port = LISTEN_ADDR
-    print("proxy Cortex su http://%s:%d -> %s" % (host, port, CORTEX_BASE), flush=True)
+    print("Cortex proxy on http://%s:%d -> %s" % (host, port, CORTEX_BASE), flush=True)
 
     if os.environ.get("CORTEX_PROXY_SELFTEST", "0") == "1":
         import threading
 
-        # Si interroga via 127.0.0.1 anche quando il bind e' 0.0.0.0.
+        # It is queried via 127.0.0.1 even when the bind is 0.0.0.0.
         threading.Thread(
             target=selftest, args=("http://127.0.0.1:%d/v1" % port,), daemon=True
         ).start()

@@ -12,7 +12,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 dist/
 build/
 .venv/
+.terraform/
+*.tfstate*
 docker-build.log

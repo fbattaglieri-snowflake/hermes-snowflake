@@ -9,7 +9,7 @@ This guide connects a Hermes Desktop instance to the backend running in SPCS, an
 
   ```text
   [hermes] tailnet IP: 100.x.y.z
-  [hermes] hermes serve pronto su 100.x.y.z:9119 (Remote gateway del Desktop)
+  [hermes] hermes serve ready on 100.x.y.z:9119 (Desktop Remote gateway)
   ```
 
   If those lines are missing, see [If the backend is not up](#if-the-backend-is-not-up).
@@ -79,9 +79,9 @@ SELECT SYSTEM$GET_SERVICE_LOGS('<DATABASE>.<SCHEMA>.HERMES_SERVICE', 0, 'hermes'
 
 | Log line | Meaning |
 |---|---|
-| `nessuno stato Tailscale e TS_AUTHKEY assente — nodo non registrato` | Set the `TS_AUTHKEY` secret and restart the service |
-| `tailscaled non partito` | Check `/tmp/tailscaled.log` in the container |
-| `hermes serve non risponde` | The line includes the tail of `serve.log`; an **empty** `serve.log` means the build attempt (see traps below) |
+| `no Tailscale state and TS_AUTHKEY missing — node not registered` | Set the `TS_AUTHKEY` secret and restart the service |
+| `tailscaled did not start` | Check `/tmp/tailscaled.log` in the container |
+| `hermes serve not responding` | The line includes the tail of `serve.log`; an **empty** `serve.log` means the build attempt (see traps below) |
 | No `tailnet IP` line at all | The image predates the autostart — run the manual sequence below |
 
 **No data is lost** in any of these cases: sessions and state are on the block volume. Only processes need to come back.

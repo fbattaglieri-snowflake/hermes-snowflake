@@ -2,7 +2,9 @@
 
 ## Upgrade
 
-Run the **Deploy to Snowflake** workflow with an explicit image tag. The workflow builds an immutable commit-SHA image, stages the SPCS specification, and applies `ALTER SERVICE`.
+Run the **Deploy to Snowflake** workflow from an approved revision. The image tag combines commit SHA, run ID and attempt, avoiding reuse on workflow reruns. This is not digest enforcement and the build still includes mutable upstream installers. The workflow stages the specification, applies `ALTER SERVICE`, and polls all reported containers for READY with a readiness deadline. Container readiness does not prove that the gateway, messaging and model inference work; an operator smoke test remains necessary.
+
+The SOUL migration replaces only the exact recognized legacy Telegram block, preserves surrounding user text, and writes a private backup before atomic replacement. Customized or ambiguous legacy blocks are left unchanged with a warning. The legacy text in `migrate_soul.py` is migration data, not untranslated runtime documentation.
 
 **Never drop and recreate the Hermes service** during an upgrade. The block volume and the tailnet IP persistence are tied to the service object. Dropping the service detaches or deletes the volume.
 
@@ -44,7 +46,7 @@ Both must report a non-zero count and the same `md5sum`. If `/opt` reports 0, th
 
 ```text
 [hermes] tailnet IP: 100.x.y.z
-[hermes] hermes serve pronto su 100.x.y.z:9119 (Remote gateway del Desktop)
+[hermes] hermes serve ready on 100.x.y.z:9119 (Desktop Remote gateway)
 ```
 
 The tailnet IP is logged deliberately: the `readinessProbe` floods the log every 5 seconds, so with a tail of 400 it becomes unreachable after roughly 30 minutes.
@@ -91,6 +93,6 @@ SELECT SYSTEM$GET_SERVICE_LOGS('<DATABASE>.<SCHEMA>.HERMES_SERVICE', 0, 'hermes'
 
 ## Backup
 
-An optional **Backup State** GitHub Action archives Hermes state from the block volume to a Snowflake internal stage. See [backup-recovery.md](backup-recovery.md) for setup, manual backup procedures, and recovery scenarios.
+Automatic **Backup State** is not implemented. The action deliberately fails without accessing the account rather than claiming a nonexistent backup. See [backup-recovery.md](backup-recovery.md) for operator-managed backup and restore acceptance requirements.
 
 **Critical**: never `DROP SERVICE` without first backing up the block volume. The volume and all accumulated state (sessions, memory, skills, cronjobs) are destroyed when the service is dropped.

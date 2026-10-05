@@ -683,7 +683,7 @@ def main():
                     and e["model"] not in noti]
     if promuovibili:
         print("\nPROMUOVIBILI: %s" % ", ".join(promuovibili))
-        print("Procedura di promozione: §15 di 20260819_hermes_desktop_client_handover.md")
+        print("Promotion procedure: docs/model-management.md")
 
     if args.json:
         with open(args.json, "w") as fh:

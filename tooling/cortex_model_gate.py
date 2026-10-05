@@ -32,9 +32,8 @@ ottiene HTTP 401 (trappola gia' incontrata, playbook §9).
 
 Verdetti
 --------
-COMPATIBILE     text and tool calling work through the proxy: safe to promote
-CON RISERVA     responds but without usable tool calling. Suitable for text generation
-                only; NOT for Hermes in agent mode since agents depend on tool calling
+COMPATIBILE     all local gate checks passed; deployed client validation still required
+CON RISERVA     a required check failed, is missing, or is inconclusive; do not promote
 INCOMPATIBILE   does not respond at all from this account: do not add to config
 
 Exit code: 1 se un modello GIA' in cortex_models.json regredisce (era in
@@ -43,6 +42,7 @@ accorgersi di una regressione lato Snowflake senza leggere tutto il report.
 """
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -215,11 +215,11 @@ def t1_t2_non_stream(host, pat, model, esito):
         contenuto = ((ch.get("message") or {}).get("content") or "").strip()
 
     esito["budget_necessario"] = budget
-    esito["T1"] = "OK" if contenuto else "KO"
+    esito["T1"] = "OK" if completed_text(status, testo) else "KO"
     esito["contenuto"] = contenuto[:30]
-    if not contenuto:
-        esito["motivo"] = ("HTTP 200 ma contenuto vuoto anche con %d token "
-                           "(finish=%r)" % (budget, ch.get("finish_reason")))
+    if esito["T1"] != "OK":
+        esito["motivo"] = ("No completed text answer: HTTP %s, budget=%d, finish=%r"
+                           % (status, budget, ch.get("finish_reason")))
         return False
 
     # T2: cosa manda Cortex, e cosa resta dopo la normalizzazione del proxy.
@@ -256,11 +256,14 @@ def t3_streaming(host, pat, model, esito):
     chunk = 0
     testo = ""
     visto_finish = False
+    saw_done = False
+    incomplete = False
     for riga in righe:
         if not riga.startswith("data:"):
             continue
         payload = riga[5:].strip()
         if payload == "[DONE]":
+            saw_done = True
             break
         try:
             obj = json.loads(payload)
@@ -271,6 +274,8 @@ def t3_streaming(host, pat, model, esito):
             testo += ((c.get("delta") or {}).get("content") or "")
             if c.get("finish_reason"):
                 visto_finish = True
+            if c.get("finish_reason") in ("length", "content_filter"):
+                incomplete = True
 
     esito["stream_chunk"] = chunk
     esito["stream_finish_upstream"] = visto_finish
@@ -280,9 +285,23 @@ def t3_streaming(host, pat, model, esito):
         return
     # Il proxy chiude lo stream lui se l'upstream non lo fa: in entrambi i casi
     # il client vede un finish_reason. Serve solo che i chunk arrivino.
-    esito["T3"] = "OK" if testo.strip() else "KO"
+    esito["T3"] = "OK" if testo.strip() and saw_done and not incomplete else "KO"
+    if incomplete:
+        esito["note"].append("streaming: truncated or filtered response")
+    if not saw_done:
+        esito["note"].append("streaming: missing [DONE] terminator")
     if not testo.strip():
         esito["note"].append("streaming: chunk presenti ma nessun contenuto")
+
+
+def completed_text(status, text):
+    """An accepted request is not necessarily a completed, usable answer."""
+    choice = scelta(text)
+    message = choice.get("message") or {}
+    content = message.get("content")
+    return (status == 200 and isinstance(content, str) and bool(content.strip())
+            and not message.get("tool_calls")
+            and choice.get("finish_reason") not in ("length", "content_filter"))
 
 
 def t4_tool_roundtrip(host, pat, model, esito):
@@ -301,6 +320,8 @@ def t4_tool_roundtrip(host, pat, model, esito):
         "messages": [{"role": "user",
                       "content": "What time is it in Rome? Use the get_time tool."}],
     }
+    if esito.get("richiede_reasoning_none"):
+        base["reasoning_effort"] = "none"
     adattato, _ = cortex_proxy.adapt_payload(json.dumps(base).encode())
     status, testo = post(host, pat, json.loads(adattato))
 
@@ -326,6 +347,25 @@ def t4_tool_roundtrip(host, pat, model, esito):
         return
 
     esito["tool_calls_emesse"] = len(chiamate)
+    seen_ids = set()
+    for tool_call in chiamate:
+        try:
+            function = tool_call["function"]
+            arguments = json.loads(function["arguments"])
+            call_id = tool_call["id"]
+            valid = (function["name"] == "get_time"
+                     and isinstance(arguments, dict)
+                     and isinstance(arguments.get("city"), str)
+                     and bool(arguments["city"].strip())
+                     and isinstance(call_id, str) and bool(call_id)
+                     and call_id not in seen_ids)
+            seen_ids.add(call_id)
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            esito["T4"] = "KO"
+            esito["tools"] = "invalid tool name, ID or JSON arguments"
+            return
 
     # Round-trip: si rimanda indietro l'assistant esattamente com'e' arrivato,
     # piu' un messaggio 'tool' per OGNI chiamata (il vincolo e' 1:1).
@@ -345,7 +385,9 @@ def t4_tool_roundtrip(host, pat, model, esito):
         esito["T4"] = "KO"
         esito["tools"] = "round-trip del toolResult rifiutato: %s" % motivo(status, testo)
         return
-    esito["T4"] = "OK"
+    esito["T4"] = "OK" if completed_text(status, testo) else "INCONCLUSIVO"
+    if esito["T4"] != "OK":
+        esito["tools"] = "tool result accepted but no completed text answer"
 
 
 def t5_tool_parallele(host, pat, model, esito):
@@ -373,14 +415,11 @@ def t5_tool_parallele(host, pat, model, esito):
     ]
     body = {"model": model, "max_completion_tokens": BUDGET_STREAM,
             "tools": [TOOL, TOOL2], "messages": storia}
+    if esito.get("richiede_reasoning_none"):
+        body["reasoning_effort"] = "none"
 
     status, testo = post(host, pat, body)
     esito["parallele_grezze"] = "HTTP %s" % status
-
-    if status == 200:
-        # L'upstream le accetta: nessuna fusione necessaria per questo modello.
-        esito["T5"] = "OK (upstream accetta le tool call parallele)"
-        return
 
     if COLLAPSE is None:
         esito["T5"] = "NON VERIFICABILE"
@@ -389,9 +428,11 @@ def t5_tool_parallele(host, pat, model, esito):
             "e' piu' vecchio della patch sulle tool call parallele")
         return
 
-    fuso = COLLAPSE(dict(body))
+    # The proxy mutates its argument and returns a boolean, not the payload.
+    fuso = copy.deepcopy(body)
+    COLLAPSE(fuso)
     status, testo = post(host, pat, fuso)
-    esito["T5"] = "OK (fuse dal proxy)" if status == 200 else "KO"
+    esito["T5"] = "OK (fuse dal proxy)" if completed_text(status, testo) else "KO"
     if status != 200:
         esito["note"].append("tool call parallele: %s" % motivo(status, testo))
 
@@ -451,14 +492,13 @@ def t7_context(model, dichiarato, noti, esito):
 def verdetto(esito):
     if esito.get("T1") != "OK":
         return "INCOMPATIBILE"
-    tool_ok = esito.get("T4") == "OK" or str(esito.get("T6", "")).startswith("OK")
-    if esito.get("T4") == "KO" and not str(esito.get("T6", "")).startswith("OK"):
+    # Parameter acceptance (T6) cannot replace a completed tool round-trip (T4).
+    # Missing, failed, or inconclusive checks must never authorize promotion.
+    if any(esito.get(test) != "OK" for test in ("T2", "T3", "T4", "T7")):
         return "CON RISERVA"
-    if esito.get("T4") == "INCONCLUSIVO":
+    if not str(esito.get("T5", "")).startswith("OK"):
         return "CON RISERVA"
-    if esito.get("T2") == "KO" or esito.get("T3") == "KO":
-        return "CON RISERVA"
-    return "COMPATIBILE" if tool_ok else "CON RISERVA"
+    return "COMPATIBILE"
 
 
 def valuta(host, pat, model, noti):
@@ -643,7 +683,7 @@ def main():
                     and e["model"] not in noti]
     if promuovibili:
         print("\nPROMUOVIBILI: %s" % ", ".join(promuovibili))
-        print("Procedura di promozione: §15 di 20260819_hermes_desktop_client_handover.md")
+        print("Promotion procedure: docs/model-management.md")
 
     if args.json:
         with open(args.json, "w") as fh:

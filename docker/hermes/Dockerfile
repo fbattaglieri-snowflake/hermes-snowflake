@@ -57,14 +57,27 @@ RUN pip3 install --break-system-packages --ignore-installed \
     anthropic==1.3.0 \
     requests==2.33.0 \
     httpx==0.28.1 \
-    PyJWT==2.13.0 \
+    PyJWT==2.15.0 \
     cryptography==50.0.1 \
     setuptools==84.0.0
+
+# Replace the distro-owned copies through apt, including their actual code.
+# Retain a local pip installation for the system interpreter and operators.
+RUN python3 -m pip install --break-system-packages --ignore-installed pip==26.2.1 && \
+    apt-get purge -y python3-pip python3-setuptools && \
+    python3 -m pip --version && \
+    python3 -c "import setuptools; assert setuptools.__version__ == '84.0.0'"
 
 # Install Hermes Agent (into the image — no reinstall needed on every restart).
 # The block volume is mounted on /root at runtime: anything installed under
 # /root at build time would be masked. We therefore assert the FHS layout.
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && \
+ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
+ARG HERMES_INSTALLER_SHA256=0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b
+RUN curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_GIT_SHA}/scripts/install.sh" \
+      -o /tmp/hermes-install.sh && \
+    printf '%s  %s\n' "$HERMES_INSTALLER_SHA256" /tmp/hermes-install.sh | sha256sum -c - && \
+    bash /tmp/hermes-install.sh --commit "$HERMES_GIT_SHA" --force-commit --non-interactive --skip-setup && \
+    rm /tmp/hermes-install.sh && \
     HERMES_BIN="$(command -v hermes || true)" && \
     if [ -z "$HERMES_BIN" ]; then echo "ERROR: hermes not installed" >&2; exit 1; fi && \
     case "$HERMES_BIN" in \
@@ -72,37 +85,17 @@ RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && \
     esac && \
     echo "hermes installed at $HERMES_BIN"
 
-# Version pin. The upstream installer clones HEAD and exposes no revision flag
-# (`hermes update` only accepts --branch, not a SHA), so without this step the
-# build is NOT reproducible: two builds of the same commit of this repository
-# can contain different Hermes versions, and a rebuild done for a proxy patch
-# jumps the agent to an arbitrary version, mixing two changes into one.
-#
-# Override with --build-arg HERMES_GIT_SHA=<sha> to upgrade Hermes explicitly
-# and traceably.
-ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
+# The pinned installer selects the commit BEFORE resolving dependencies into
+# venv. Do not re-sync into uv's default .venv, which the launcher does not use.
+# An intentional revision upgrade must also update the installer checksum.
 RUN set -eu; \
     REPO=/usr/local/lib/hermes-agent; \
-    if ! git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1; then \
-        echo "ERROR: $REPO is not a git repo, cannot pin" >&2; exit 1; \
-    fi; \
-    git -C "$REPO" fetch --quiet origin "$HERMES_GIT_SHA" \
-      || git -C "$REPO" fetch --quiet --unshallow origin \
-      || git -C "$REPO" fetch --quiet origin; \
-    git -C "$REPO" checkout --quiet --detach "$HERMES_GIT_SHA"; \
+    test "$(git -C "$REPO" rev-parse HEAD)" = "$HERMES_GIT_SHA"; \
     VENV_PY="$REPO/venv/bin/python"; \
-    UV="$(command -v uv || echo /root/.hermes/bin/uv)"; \
-    # The installer resolves dependencies from uv.lock, not requirements.txt:
-    # without a re-sync the venv would stay the one from HEAD on top of the
-    # pinned code — exactly the combination nobody ever tested.
-    if [ -f "$REPO/uv.lock" ]; then \
-        ( cd "$REPO" && VIRTUAL_ENV="$REPO/venv" "$UV" sync --frozen ); \
-    elif [ -f "$REPO/requirements.txt" ]; then \
-        "$VENV_PY" -m pip install -r "$REPO/requirements.txt" \
-          || "$UV" pip install --python "$VENV_PY" -r "$REPO/requirements.txt"; \
-    else \
-        echo "ERROR: neither uv.lock nor requirements.txt in $REPO" >&2; exit 1; \
-    fi; \
+    test -x "$VENV_PY"; \
+    case "$(readlink -f "$VENV_PY")" in /root/*) echo "ERROR: Python is masked by the root volume" >&2; exit 1 ;; esac; \
+    grep -F "$VENV_PY" /usr/local/bin/hermes; \
+    "$VENV_PY" -c "import hermes_cli, ruamel.yaml"; \
     hermes --version; \
     echo "hermes pinned to $HERMES_GIT_SHA"
 
@@ -163,8 +156,8 @@ RUN rm -rf /root/.cache /tmp/* && \
 # /usr/local/lib/hermes-agent and its seed are excluded: their dependency set is
 # resolved from the upstream uv.lock at the pinned HERMES_GIT_SHA. Forcing a
 # newer package there would ship a combination upstream never resolved, so the
-# upgrade lever is the pin, not an override. The same paths are excluded from the
-# blocking image scan in CI.
+# upgrade lever is the pin, not an override. These paths remain INCLUDED in the
+# complete blocking image scan in CI.
 COPY docker/hermes/assert_python_floors.py /tmp/assert_python_floors.py
 RUN python3 /tmp/assert_python_floors.py setuptools=78.1.1 \
       --exclude /usr/local/lib/hermes-agent \

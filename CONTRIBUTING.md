@@ -10,6 +10,6 @@ Contributions are welcome through issues and pull requests.
 4. Add tests for changes to authentication, proxy request forwarding, model management, or infrastructure scripts.
 5. Run `./scripts/validate.sh` before opening a pull request.
 6. Keep all repository content in English.
-7. Reference the relevant handover or context document when fixing a known gotcha.
+7. Reference a public repository guide when fixing a known issue; keep private handovers outside Git.
 
 All changes require review and approval from `@fbattaglieri-snowflake`. The maintainer may close suggestions that increase credential exposure, weaken least privilege, or make the deployment account-specific.

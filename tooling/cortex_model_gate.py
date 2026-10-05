@@ -654,7 +654,7 @@ def main():
                   and e["model"] not in known]
     if promotable:
         print("\nPROMOTABLE: %s" % ", ".join(promotable))
-        print("Promotion procedure: §15 of 20260819_hermes_desktop_client_handover.md")
+        print("Promotion procedure: docs/model-management.md")
 
     if args.json:
         with open(args.json, "w") as fh:

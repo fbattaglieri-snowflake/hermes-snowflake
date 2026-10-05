@@ -73,7 +73,8 @@ RUN python3 -m pip install --break-system-packages --ignore-installed pip==26.2.
 # /root at build time would be masked. We therefore assert the FHS layout.
 ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
 ARG HERMES_INSTALLER_SHA256=0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b
-RUN curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_GIT_SHA}/scripts/install.sh" \
+RUN curl --retry 3 --retry-max-time 120 --connect-timeout 15 --max-time 60 -fsSL \
+      "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_GIT_SHA}/scripts/install.sh" \
       -o /tmp/hermes-install.sh && \
     printf '%s  %s\n' "$HERMES_INSTALLER_SHA256" /tmp/hermes-install.sh | sha256sum -c - && \
     bash /tmp/hermes-install.sh --commit "$HERMES_GIT_SHA" --force-commit --non-interactive --skip-setup && \

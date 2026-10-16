@@ -1,8 +1,23 @@
 # Model Management
 
-## The Four-Gate Model
+## Recommended Workflow: Shared Multi-API Proxy (`snowflake-proxy-cortexrestapi`)
 
-Adding a new Cortex model to the Hermes configuration requires passing four gates in sequence:
+When Hermes is connected to the shared multi-API SPCS proxy [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) (`snowflake-standard-chat`, `snowflake-standard-responses`, `snowflake-standard-messages` with `discover_models: true`), model management is fully decoupled from the Hermes container:
+
+1. **Enable Cross-Region Inference (`ANY_REGION`):**
+   ```sql
+   SHOW PARAMETERS LIKE 'CORTEX_ENABLED_CROSS_REGION' IN ACCOUNT;
+   ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
+   ```
+2. **Qualify the Candidate Model:** Run [**`cortex-model-compatibility-matrix`**](https://github.com/fbattaglieri-snowflake/cortex-model-compatibility-matrix) (`scripts/qualify.py`) against the target protocol (`chat`, `responses`, or `messages`).
+3. **Zero-Touch Promotion:** Promote the qualified model into the Standard Registry using `scripts/promote_model.py` in `snowflake-proxy-cortexrestapi`.
+4. **Automatic Discovery in Hermes:** Within 60 seconds, the new model is served on `GET /<protocol>/v1/models` and appears automatically in Hermes `/model` — **no `models.json` edits, no `hermes_configure.py` re-runs, and no container restarts required**.
+
+---
+
+## Embedded Fallback Proxy Workflow: The Four-Gate Model (`proxy/cortex_proxy.py`)
+
+If you use the embedded single-container fallback proxy (`127.0.0.1:8080`), adding a new Cortex model to the static Hermes configuration requires passing four gates in sequence:
 
 1. The model must be actually served by the Snowflake account (not just listed in the catalog).
 2. It must be in `proxy/models.json`.

@@ -42,7 +42,8 @@ Set in the service spec. `HERMES_PROVIDER` and `HERMES_MODEL` are rendered by th
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `HERMES_PROVIDER` | `snowflake-cortex-proxy` | Provider slug written into `config.yaml`. |
+| `HERMES_PROVIDER` | `snowflake-standard-messages` or `snowflake-cortex-proxy` | Provider slug written into `config.yaml` (`snowflake-standard-chat`, `snowflake-standard-responses`, `snowflake-standard-messages`, `snowflake-cortex-proxy`, `snowflake-cortex`, or `ollama-spcs`). |
+| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.namespace.svc.spcs.internal:8080` | Internal SPCS base origin for the shared multi-API [`snowflake-proxy-cortexrestapi`](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) service. |
 | `HERMES_MODEL` | `claude-opus-5` | Default model. `hermes_configure.py` assigns `model.default` from this; if unset it falls back to the script's default, so a config re-patch would silently change the active model. Setting it keeps the choice declarative in the spec instead of living only in block-volume state. |
 | `HERMES_SELFTEST` | `1` | Runs the boot self-tests and leaves the outcome in the service logs. Set to `0` to skip. |
 | `TELEGRAM_ALLOWED_USERS` | `123456789` | Optional allow-list of comma-separated **numeric** user IDs. A username is silently ignored: the adapter compares numeric IDs, so inbound messages are dropped with no log line at default verbosity. Outbound still works, which makes the bot look like it "receives but never answers". |

@@ -16,7 +16,28 @@ Hermes Agent speaks the OpenAI Chat Completions protocol. Snowflake Cortex expos
 | 4 | `GET /v1/models` returns 404 | Model list never populates at handshake |
 | 5 | Token from `/snowflake/session/token` required, not `Authorization: Bearer` | 401 on every request without the SPCS header rewrite |
 
-The `proxy/cortex_proxy.py` in this repository resolves all five in a minimal, dependency-free Python process that runs inside the container on `127.0.0.1:8080`. Hermes is configured to use this proxy as its LLM provider. The result: every Cortex model that supports tool calling works reliably with Hermes in full agent mode.
+The `proxy/cortex_proxy.py` in this repository resolves all five in a minimal, dependency-free Python process that runs inside the container on `127.0.0.1:8080`.
+
+### Recommended Multi-API Shared Proxy: [`snowflake-proxy-cortexrestapi`](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi)
+
+For multi-protocol deployments across **Hermes, n8n, Langflow, and LangChain/LangGraph**, connect Hermes to the dedicated shared SPCS proxy service [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) instead of (or alongside) the single-container loopback proxy. It exposes all **three Snowflake Cortex REST API protocols** with dynamic model discovery (`discover_models: true`):
+
+- **`Snowflake-Standard-Chat`** (`http://<proxy-host>:8080/chat/v1`, `api_mode: chat_completions`)
+- **`Snowflake-Standard-Responses`** (`http://<proxy-host>:8080/responses/v1`, `api_mode: codex_responses`)
+- **`Snowflake-Standard-Messages`** (`http://<proxy-host>:8080/messages`, `api_mode: anthropic_messages`)
+
+With `snowflake-proxy-cortexrestapi`:
+- **Universal Client Normalization (`ProfileV2`):** Flexible token budgets (`1..128000`), automatic `store=false` and `ordered-items` SSE streaming on Responses, automatic `reasoning_effort` normalization on Chat, `thinking` vs `temperature` normalization on Messages, and automatic multi-round tool call ID deduplication (`call_0..N`).
+- **Zero-Touch Model Promotion:** Newly qualified models tested with [**`cortex-model-compatibility-matrix`**](https://github.com/fbattaglieri-snowflake/cortex-model-compatibility-matrix) and promoted via `scripts/promote_model.py` appear automatically in Hermes `/model` without editing `models.json` or restarting containers.
+
+### Cross-Region Inference (`ANY_REGION`)
+
+To maximize model availability across all three APIs (`Chat`, `Responses`, `Messages`), enable **Cross-Region Inference** on your Snowflake account when permitted by your residency/compliance rules:
+
+```sql
+SHOW PARAMETERS LIKE 'CORTEX_ENABLED_CROSS_REGION' IN ACCOUNT;
+ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
+```
 
 ## Architecture
 

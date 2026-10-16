@@ -29,6 +29,9 @@ SNOWFLAKE_HOST = os.environ.get(
 )
 CORTEX_URL = "https://%s/api/v2/cortex/v1" % SNOWFLAKE_HOST
 PROXY_URL = "http://127.0.0.1:8080/v1"
+STANDARD_PROXY_ORIGIN = os.environ.get(
+    "STANDARD_PROXY_ORIGIN", "http://llm-proxy-standard.namespace.svc.spcs.internal:8080"
+).rstrip("/")
 OLLAMA_URL = os.environ.get(
     "OLLAMA_HOST", "http://ollama-service:11434"  # override with OLLAMA_HOST
 ).rstrip("/") + "/v1"
@@ -70,6 +73,9 @@ OAUTH_HEADER = {"X-Snowflake-Authorization-Token-Type": "OAUTH"}
 
 PROVIDER_DIRECT = "snowflake-cortex"
 PROVIDER_PROXY = "snowflake-cortex-proxy"
+PROVIDER_STANDARD_CHAT = "snowflake-standard-chat"
+PROVIDER_STANDARD_RESPONSES = "snowflake-standard-responses"
+PROVIDER_STANDARD_MESSAGES = "snowflake-standard-messages"
 PROVIDER_OLLAMA = "ollama-spcs"
 
 
@@ -84,6 +90,22 @@ def build_models(mapping, ruamel_map):
 
 def build_providers(ruamel_map):
     providers = ruamel_map()
+
+    # Shared multi-API Standard Proxy (snowflake-proxy-cortexrestapi) providers
+    # with dynamic catalog discovery (discover_models: True) across all 3 APIs:
+    for slug, display, suffix, mode in (
+        (PROVIDER_STANDARD_CHAT, "Snowflake-Standard-Chat", "/chat/v1", "chat_completions"),
+        (PROVIDER_STANDARD_RESPONSES, "Snowflake-Standard-Responses", "/responses/v1", "codex_responses"),
+        (PROVIDER_STANDARD_MESSAGES, "Snowflake-Standard-Messages", "/messages", "anthropic_messages"),
+    ):
+        std = ruamel_map()
+        std["name"] = display
+        std["base_url"] = STANDARD_PROXY_ORIGIN + suffix
+        std["api_mode"] = mode
+        std["api_key"] = "internal-spcs"
+        std["context_length"] = 128000
+        std["discover_models"] = True
+        providers[slug] = std
 
     # Percorso via proxy: e' il DEFAULT perche' e' l'unico che funziona con i
     # modelli Cortex. Hermes invia 'max_tokens', che Cortex rifiuta con HTTP 400
@@ -224,8 +246,15 @@ def main():
     parser.add_argument(
         "--provider",
         default=PROVIDER_PROXY,
-        choices=[PROVIDER_DIRECT, PROVIDER_PROXY, PROVIDER_OLLAMA],
-        help="provider da attivare come default",
+        choices=[
+            PROVIDER_DIRECT,
+            PROVIDER_PROXY,
+            PROVIDER_STANDARD_CHAT,
+            PROVIDER_STANDARD_RESPONSES,
+            PROVIDER_STANDARD_MESSAGES,
+            PROVIDER_OLLAMA,
+        ],
+        help="provider to activate as the default",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(

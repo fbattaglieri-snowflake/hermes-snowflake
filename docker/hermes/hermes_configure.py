@@ -94,9 +94,12 @@ def build_providers(ruamel_map):
     # Shared multi-API Standard Proxy (snowflake-proxy-cortexrestapi) providers
     # with dynamic catalog discovery (discover_models: True) across all 3 APIs:
     for slug, display, suffix, mode in (
-        (PROVIDER_STANDARD_CHAT, "Snowflake-Standard-Chat", "/chat/v1", "chat_completions"),
-        (PROVIDER_STANDARD_RESPONSES, "Snowflake-Standard-Responses", "/responses/v1", "codex_responses"),
-        (PROVIDER_STANDARD_MESSAGES, "Snowflake-Standard-Messages", "/messages", "anthropic_messages"),
+        (PROVIDER_STANDARD_CHAT, "Snowflake-Standard-Chat", "/chat/v1",
+         "chat_completions"),
+        (PROVIDER_STANDARD_RESPONSES, "Snowflake-Standard-Responses", "/responses/v1",
+         "codex_responses"),
+        (PROVIDER_STANDARD_MESSAGES, "Snowflake-Standard-Messages", "/messages",
+         "anthropic_messages"),
     ):
         std = ruamel_map()
         std["name"] = display

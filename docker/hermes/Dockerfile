@@ -51,8 +51,21 @@ RUN pip3 install --break-system-packages --ignore-installed \
 # Installa Hermes Agent (nell'immagine — non richiede reinstall ad ogni restart).
 # Il volume block viene montato su /root a runtime: qualsiasi cosa installata sotto
 # /root a build time sarebbe mascherata. Verifichiamo quindi il layout FHS.
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && \
-    HERMES_BIN="$(command -v hermes || true)" && \
+#
+# L'installer attuale clona in $HERMES_HOME/hermes-agent e pubblica il comando in
+# ~/.local/bin, entrambi sotto /root: --dir lo riporta in /usr/local/lib e il
+# launcher viene linkato in /usr/local/bin. --skip-computer-use evita cua-driver,
+# che richiede librerie X11 assenti nell'immagine e non serve in un container.
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh && \
+    bash /tmp/hermes-install.sh --non-interactive --skip-computer-use \
+      --dir /usr/local/lib/hermes-agent && \
+    rm -f /tmp/hermes-install.sh && \
+    if ! command -v hermes > /dev/null 2>&1; then \
+      for cand in /usr/local/lib/hermes-agent/.hermes/bin/hermes /root/.local/bin/hermes; do \
+        if [ -x "$cand" ]; then ln -sf "$(readlink -f "$cand")" /usr/local/bin/hermes; break; fi; \
+      done; \
+    fi && \
+    HERMES_BIN="$(readlink -f "$(command -v hermes || true)" 2>/dev/null || true)" && \
     if [ -z "$HERMES_BIN" ]; then echo "ERRORE: hermes non installato" >&2; exit 1; fi && \
     case "$HERMES_BIN" in \
       /root/*) echo "ERRORE: hermes in $HERMES_BIN, sarebbe mascherato dal volume su /root" >&2; exit 1 ;; \

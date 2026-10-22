@@ -50,60 +50,48 @@ RUN pip3 install --break-system-packages --ignore-installed \
 
 # Installa Hermes Agent (nell'immagine — non richiede reinstall ad ogni restart).
 # Il volume block viene montato su /root a runtime: qualsiasi cosa installata sotto
-# /root a build time sarebbe mascherata. Verifichiamo quindi il layout FHS.
+# /root a build time sarebbe mascherata.
 #
-# L'installer attuale di default clona in $HERMES_HOME/hermes-agent, mette uv e i
-# runtime in $HERMES_HOME/tools e pubblica il comando in ~/.local/bin: tutto sotto
-# /root. --dir porta il checkout in /usr/local/lib, HERMES_RUNTIME_DIR (impostato
-# per tutta l'immagine, come nel Dockerfile upstream) porta lo store dei runtime
-# fuori dal volume, e il launcher viene linkato in /usr/local/bin.
+# L'installer attuale tiene checkout, environment Python (installs/) e runtime
+# (tools/) sotto la home di Hermes. La build usa quindi una home dedicata fuori
+# dal volume, /opt/hermes, con il checkout in /opt/hermes/hermes-agent;
+# HERMES_RUNTIME_DIR e' impostato per tutta l'immagine come nel Dockerfile
+# upstream. A runtime la home resta /root/.hermes (config, sessioni, memorie sul
+# volume) e start.sh vi collega /opt/hermes/installs. /usr/local/lib/hermes-agent
+# resta un alias del checkout per i path gia' usati altrove.
 # --skip-computer-use evita cua-driver, che richiede librerie X11 e non serve qui.
 #
-# Pin di versione: l'installer accetta --commit e prepara venv e dipendenze per
-# quel commit, quindi build dello stesso commit di questo repository producono la
+# Pin di versione: l'installer accetta --commit e prepara l'environment per quel
+# commit, quindi build dello stesso commit di questo repository producono la
 # stessa versione di Hermes. Sovrascrivibile con --build-arg HERMES_GIT_SHA=<sha>
 # per aggiornare Hermes in modo esplicito e tracciabile (default: release v0.22.4).
-ENV HERMES_RUNTIME_DIR=/usr/local/lib/hermes-runtime
+ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 ARG HERMES_GIT_SHA=4d04303818b61bf3aa09278af48356315515965b
 RUN set -eu; \
-    REPO=/usr/local/lib/hermes-agent; \
+    REPO=/opt/hermes/hermes-agent; \
     curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh; \
-    bash /tmp/hermes-install.sh --non-interactive --skip-computer-use \
-      --dir "$REPO" --commit "$HERMES_GIT_SHA"; \
+    HERMES_HOME=/opt/hermes bash /tmp/hermes-install.sh --non-interactive \
+      --skip-computer-use --dir "$REPO" --commit "$HERMES_GIT_SHA"; \
     rm -f /tmp/hermes-install.sh; \
-    if ! command -v hermes > /dev/null 2>&1; then \
-      for cand in "$REPO/.hermes/bin/hermes" /root/.local/bin/hermes; do \
-        if [ -x "$cand" ]; then ln -sf "$(readlink -f "$cand")" /usr/local/bin/hermes; break; fi; \
-      done; \
-    fi; \
-    HERMES_BIN="$(readlink -f "$(command -v hermes || true)" 2>/dev/null || true)"; \
-    if [ -z "$HERMES_BIN" ]; then echo "ERRORE: hermes non installato" >&2; exit 1; fi; \
-    case "$HERMES_BIN" in \
-      /root/*) echo "ERRORE: hermes in $HERMES_BIN, sarebbe mascherato dal volume su /root" >&2; exit 1 ;; \
-    esac; \
+    test -x "$REPO/.hermes/bin/hermes" || { echo "ERRORE: launcher hermes assente" >&2; exit 1; }; \
+    ln -sfn "$REPO/.hermes/bin/hermes" /usr/local/bin/hermes; \
+    ln -sfn "$REPO" /usr/local/lib/hermes-agent; \
     HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"; \
     if [ "$HEAD_SHA" != "$HERMES_GIT_SHA" ]; then \
       echo "ERRORE: checkout a $HEAD_SHA, atteso $HERMES_GIT_SHA" >&2; exit 1; \
     fi; \
-    # start.sh e i passi successivi usano $REPO/venv: se l'installer crea .venv o
-    # un venv esterno, lo esponiamo con quel nome invece di riscrivere ogni chiamante.
-    if [ ! -x "$REPO/venv/bin/python" ]; then \
-      VENV_DIR=""; \
-      for cfg in "$REPO/.venv/pyvenv.cfg" $(find "$HERMES_RUNTIME_DIR" -maxdepth 5 -name pyvenv.cfg 2>/dev/null); do \
-        d="$(dirname "$cfg")"; \
-        if [ -x "$d/bin/python" ] && "$d/bin/python" -c 'import hermes_cli' > /dev/null 2>&1; then VENV_DIR="$d"; break; fi; \
-      done; \
-      if [ -z "$VENV_DIR" ]; then \
-        echo "ERRORE: venv di Hermes non trovato; candidati:" >&2; \
-        find "$REPO" "$HERMES_RUNTIME_DIR" -maxdepth 5 -name pyvenv.cfg >&2 || true; exit 1; \
-      fi; \
-      ln -sfn "$VENV_DIR" "$REPO/venv"; \
+    # Un solo environment committed: esposto come $REPO/venv per start.sh e
+    # per i passi successivi.
+    VENV_CFG="$(find /opt/hermes/installs -path '*/environments/*/venv/pyvenv.cfg')"; \
+    if [ "$(printf '%s\n' "$VENV_CFG" | grep -c .)" != 1 ]; then \
+      echo "ERRORE: atteso un solo environment, trovati: $VENV_CFG" >&2; exit 1; \
     fi; \
-    case "$(readlink -f "$REPO/venv")" in \
-      /root/*) echo "ERRORE: venv sotto /root, sarebbe mascherato dal volume" >&2; exit 1 ;; \
-    esac; \
-    hermes --version; \
-    echo "hermes $HEAD_SHA installato in $HERMES_BIN"
+    ln -sfn "$(dirname "$VENV_CFG")" "$REPO/venv"; \
+    "$REPO/venv/bin/python" -c 'import hermes_cli'; \
+    # Verifica nella stessa condizione del runtime: home sul volume, installs collegato.
+    mkdir -p /root/.hermes && ln -sfn /opt/hermes/installs /root/.hermes/installs; \
+    HERMES_HOME=/root/.hermes hermes --version; \
+    echo "hermes $HEAD_SHA installato in $REPO"
 
 # python-telegram-bot: dipendenza di `hermes send --to telegram`, che senza di
 # essa esce con 1. L'installer di Hermes non la include.
@@ -132,8 +120,11 @@ COPY proxy/cortex_proxy.py /opt/cortex_proxy.py
 # Seed di /root/.hermes: l'installer scrive qui config.yaml, .env, SOUL.md e ~6.6MB
 # di skill bundled, ma a runtime il volume block montato su /root le maschera.
 # Le mettiamo al riparo in /opt/hermes-seed; start.sh le ripristina se mancanti.
+# La home di build e' /opt/hermes: si copia tutto tranne checkout, environment e
+# runtime, che restano nell'immagine e non devono finire sul volume.
 RUN mkdir -p /opt/hermes-seed && \
-    cp -a /root/.hermes/. /opt/hermes-seed/ && \
+    tar -C /opt/hermes --exclude=./hermes-agent --exclude=./installs --exclude=./tools \
+      -cf - . | tar -C /opt/hermes-seed -xf - && \
     test -d /opt/hermes-seed/skills || (echo "ERRORE: seed skills mancante" >&2; exit 1) && \
     echo "seed creato: $(du -sh /opt/hermes-seed | cut -f1)"
 

@@ -33,7 +33,8 @@ service ssh start || log "WARN: avvio sshd fallito"
 
 # ---------------------------------------------------------------- PATH
 # Il container gira come root, quindi l'installer usa il layout FHS:
-# binario in /usr/local/bin, codice in /usr/local/lib/hermes-agent.
+# binario in /usr/local/bin, codice in /opt/hermes/hermes-agent (alias
+# /usr/local/lib/hermes-agent).
 export PATH="/usr/local/bin:$PATH:/root/.local/bin:${HERMES_DIR}/bin"
 
 if command -v hermes > /dev/null 2>&1; then
@@ -51,6 +52,17 @@ if [ -d "$SEED_DIR" ]; then
     log "seed applicato — skill presenti: $(ls "$HERMES_DIR/skills" 2>/dev/null | wc -l)"
 else
     log "WARN: $SEED_DIR assente nell'immagine"
+fi
+
+# Environment Python di Hermes: vive nell'immagine (/opt/hermes/installs), non
+# sul volume, cosi' segue sempre la versione dell'immagine. Un installs/ reale
+# lasciato da una versione precedente viene spostato da parte, non cancellato.
+if [ -d /opt/hermes/installs ]; then
+    if [ -e "$HERMES_DIR/installs" ] && [ ! -L "$HERMES_DIR/installs" ]; then
+        mv "$HERMES_DIR/installs" "$HERMES_DIR/installs.pre-image-$(date +%Y%m%d%H%M%S)"
+        log "installs/ preesistente spostato da parte"
+    fi
+    ln -sfn /opt/hermes/installs "$HERMES_DIR/installs"
 fi
 
 # ---------------------------------------------------------------- Istruzioni Telegram

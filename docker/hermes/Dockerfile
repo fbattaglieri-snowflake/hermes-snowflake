@@ -124,6 +124,7 @@ COPY proxy/cortex_proxy.py /opt/cortex_proxy.py
 # runtime, che restano nell'immagine e non devono finire sul volume.
 RUN mkdir -p /opt/hermes-seed && \
     tar -C /opt/hermes --exclude=./hermes-agent --exclude=./installs --exclude=./tools \
+      --exclude=./cache --exclude=./logs --exclude=./telemetry --exclude=./backups \
       -cf - . | tar -C /opt/hermes-seed -xf - && \
     test -d /opt/hermes-seed/skills || (echo "ERRORE: seed skills mancante" >&2; exit 1) && \
     echo "seed creato: $(du -sh /opt/hermes-seed | cut -f1)"

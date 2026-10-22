@@ -52,60 +52,58 @@ RUN pip3 install --break-system-packages --ignore-installed \
 # Il volume block viene montato su /root a runtime: qualsiasi cosa installata sotto
 # /root a build time sarebbe mascherata. Verifichiamo quindi il layout FHS.
 #
-# L'installer attuale clona in $HERMES_HOME/hermes-agent e pubblica il comando in
-# ~/.local/bin, entrambi sotto /root: --dir lo riporta in /usr/local/lib e il
-# launcher viene linkato in /usr/local/bin. --skip-computer-use evita cua-driver,
-# che richiede librerie X11 assenti nell'immagine e non serve in un container.
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh && \
-    bash /tmp/hermes-install.sh --non-interactive --skip-computer-use \
-      --dir /usr/local/lib/hermes-agent && \
-    rm -f /tmp/hermes-install.sh && \
-    if ! command -v hermes > /dev/null 2>&1; then \
-      for cand in /usr/local/lib/hermes-agent/.hermes/bin/hermes /root/.local/bin/hermes; do \
-        if [ -x "$cand" ]; then ln -sf "$(readlink -f "$cand")" /usr/local/bin/hermes; break; fi; \
-      done; \
-    fi && \
-    HERMES_BIN="$(readlink -f "$(command -v hermes || true)" 2>/dev/null || true)" && \
-    if [ -z "$HERMES_BIN" ]; then echo "ERRORE: hermes non installato" >&2; exit 1; fi && \
-    case "$HERMES_BIN" in \
-      /root/*) echo "ERRORE: hermes in $HERMES_BIN, sarebbe mascherato dal volume su /root" >&2; exit 1 ;; \
-    esac && \
-    echo "hermes installato in $HERMES_BIN"
-
-# Pin di versione. L'installer upstream clona HEAD e non espone alcun flag di
-# revisione (`hermes update` accetta solo --branch, non uno SHA), quindi senza
-# questo passo la build NON e' riproducibile: due build dello stesso commit di
-# questo repository possono contenere versioni diverse di Hermes, e un rebuild
-# fatto per una patch del proxy fa saltare l'agente a una versione arbitraria,
-# mescolando due cambiamenti in uno.
+# L'installer attuale di default clona in $HERMES_HOME/hermes-agent, mette uv e i
+# runtime in $HERMES_HOME/tools e pubblica il comando in ~/.local/bin: tutto sotto
+# /root. --dir porta il checkout in /usr/local/lib, HERMES_RUNTIME_DIR (impostato
+# per tutta l'immagine, come nel Dockerfile upstream) porta lo store dei runtime
+# fuori dal volume, e il launcher viene linkato in /usr/local/bin.
+# --skip-computer-use evita cua-driver, che richiede librerie X11 e non serve qui.
 #
-# Sovrascrivibile con --build-arg HERMES_GIT_SHA=<sha> per aggiornare Hermes in
-# modo esplicito e tracciabile.
-ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
+# Pin di versione: l'installer accetta --commit e prepara venv e dipendenze per
+# quel commit, quindi build dello stesso commit di questo repository producono la
+# stessa versione di Hermes. Sovrascrivibile con --build-arg HERMES_GIT_SHA=<sha>
+# per aggiornare Hermes in modo esplicito e tracciabile (default: release v0.22.4).
+ENV HERMES_RUNTIME_DIR=/usr/local/lib/hermes-runtime
+ARG HERMES_GIT_SHA=4d04303818b61bf3aa09278af48356315515965b
 RUN set -eu; \
     REPO=/usr/local/lib/hermes-agent; \
-    if ! git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1; then \
-        echo "ERRORE: $REPO non e' un repo git, pin impossibile" >&2; exit 1; \
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh; \
+    bash /tmp/hermes-install.sh --non-interactive --skip-computer-use \
+      --dir "$REPO" --commit "$HERMES_GIT_SHA"; \
+    rm -f /tmp/hermes-install.sh; \
+    if ! command -v hermes > /dev/null 2>&1; then \
+      for cand in "$REPO/.hermes/bin/hermes" /root/.local/bin/hermes; do \
+        if [ -x "$cand" ]; then ln -sf "$(readlink -f "$cand")" /usr/local/bin/hermes; break; fi; \
+      done; \
     fi; \
-    git -C "$REPO" fetch --quiet origin "$HERMES_GIT_SHA" \
-      || git -C "$REPO" fetch --quiet --unshallow origin \
-      || git -C "$REPO" fetch --quiet origin; \
-    git -C "$REPO" checkout --quiet --detach "$HERMES_GIT_SHA"; \
-    VENV_PY="$REPO/venv/bin/python"; \
-    UV="$(command -v uv || echo /root/.hermes/bin/uv)"; \
-    # L'installer risolve le dipendenze da uv.lock, non da requirements.txt:
-    # senza ri-sync il venv resterebbe quello di HEAD sopra il codice pinnato,
-    # cioe' esattamente la combinazione mai testata da nessuno.
-    if [ -f "$REPO/uv.lock" ]; then \
-        ( cd "$REPO" && VIRTUAL_ENV="$REPO/venv" "$UV" sync --frozen ); \
-    elif [ -f "$REPO/requirements.txt" ]; then \
-        "$VENV_PY" -m pip install -r "$REPO/requirements.txt" \
-          || "$UV" pip install --python "$VENV_PY" -r "$REPO/requirements.txt"; \
-    else \
-        echo "ERRORE: ne uv.lock ne requirements.txt in $REPO" >&2; exit 1; \
+    HERMES_BIN="$(readlink -f "$(command -v hermes || true)" 2>/dev/null || true)"; \
+    if [ -z "$HERMES_BIN" ]; then echo "ERRORE: hermes non installato" >&2; exit 1; fi; \
+    case "$HERMES_BIN" in \
+      /root/*) echo "ERRORE: hermes in $HERMES_BIN, sarebbe mascherato dal volume su /root" >&2; exit 1 ;; \
+    esac; \
+    HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"; \
+    if [ "$HEAD_SHA" != "$HERMES_GIT_SHA" ]; then \
+      echo "ERRORE: checkout a $HEAD_SHA, atteso $HERMES_GIT_SHA" >&2; exit 1; \
     fi; \
+    # start.sh e i passi successivi usano $REPO/venv: se l'installer crea .venv o
+    # un venv esterno, lo esponiamo con quel nome invece di riscrivere ogni chiamante.
+    if [ ! -x "$REPO/venv/bin/python" ]; then \
+      VENV_DIR=""; \
+      for cfg in "$REPO/.venv/pyvenv.cfg" $(find "$HERMES_RUNTIME_DIR" -maxdepth 5 -name pyvenv.cfg 2>/dev/null); do \
+        d="$(dirname "$cfg")"; \
+        if [ -x "$d/bin/python" ] && "$d/bin/python" -c 'import hermes_cli' > /dev/null 2>&1; then VENV_DIR="$d"; break; fi; \
+      done; \
+      if [ -z "$VENV_DIR" ]; then \
+        echo "ERRORE: venv di Hermes non trovato; candidati:" >&2; \
+        find "$REPO" "$HERMES_RUNTIME_DIR" -maxdepth 5 -name pyvenv.cfg >&2 || true; exit 1; \
+      fi; \
+      ln -sfn "$VENV_DIR" "$REPO/venv"; \
+    fi; \
+    case "$(readlink -f "$REPO/venv")" in \
+      /root/*) echo "ERRORE: venv sotto /root, sarebbe mascherato dal volume" >&2; exit 1 ;; \
+    esac; \
     hermes --version; \
-    echo "hermes pinnato a $HERMES_GIT_SHA"
+    echo "hermes $HEAD_SHA installato in $HERMES_BIN"
 
 # python-telegram-bot: dipendenza di `hermes send --to telegram`, che senza di
 # essa esce con 1. L'installer di Hermes non la include.
@@ -120,7 +118,7 @@ RUN set -eu; \
 # pacchetto non e' importabile la build fallisce qui, invece di lasciare il
 # problema emergere al primo invio.
 RUN VENV_PY=/usr/local/lib/hermes-agent/venv/bin/python && \
-    UV="$(command -v uv || echo /root/.hermes/bin/uv)" && \
+    UV="$(command -v uv || find "$HERMES_RUNTIME_DIR" -type f -name uv -perm -u+x | head -1)" && \
     if "$VENV_PY" -m pip --version > /dev/null 2>&1; then \
         "$VENV_PY" -m pip install python-telegram-bot; \
     else \

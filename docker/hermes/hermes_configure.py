@@ -36,43 +36,10 @@ OLLAMA_URL = os.environ.get(
     "OLLAMA_HOST", "http://ollama-service:11434"  # override with OLLAMA_HOST
 ).rstrip("/") + "/v1"
 
-DEFAULT_MODEL = "claude-sonnet-5"
-
-# Sorgente unica dei modelli, condivisa con cortex_proxy.py. Elenco verificato con
-# chiamate reali: vedi cortex_models.json, che documenta anche i modelli provati e
-# NON disponibili su questo account.
-MODELS_PATH = os.environ.get("CORTEX_MODELS_PATH", "/opt/cortex_models.json")
-
-FALLBACK_MODELS = {"claude-sonnet-5": 1000000, "claude-opus-5": 1000000}
-
-
-def load_cortex_models():
-    try:
-        with open(MODELS_PATH) as fh:
-            models = json.load(fh)["models"]
-        if models:
-            return {str(k): int(v) for k, v in models.items()}
-    except Exception as err:
-        print("attenzione: %s illeggibile (%s), uso il fallback" % (MODELS_PATH, err))
-    return dict(FALLBACK_MODELS)
-
-
-CORTEX_MODELS = load_cortex_models()
+DEFAULT_MODEL = "openai-gpt-6-astra"
 
 OLLAMA_MODELS = {"muse-glimmer:30b": 128000}
 
-# Il session token SPCS viene ruotato sul filesystem. key_cmd lo rilegge per
-# richiesta, ma con output "bare" Hermes lo cacherebbe 15 minuti e dopo una
-# rotazione le richieste fallirebbero: l'helper emette JSON con expires_in
-# breve, cosi' il token viene rinfrescato spesso.
-SESSION_TOKEN_CMD = "/opt/spcs_token.sh"
-
-# Da SPCS il Cortex REST API accetta solo OAuth, e pretende questo header che
-# l'SDK OpenAI non invia di suo.
-OAUTH_HEADER = {"X-Snowflake-Authorization-Token-Type": "OAUTH"}
-
-PROVIDER_DIRECT = "snowflake-cortex"
-PROVIDER_PROXY = "snowflake-cortex-proxy"
 PROVIDER_STANDARD_CHAT = "snowflake-standard-chat"
 PROVIDER_STANDARD_RESPONSES = "snowflake-standard-responses"
 PROVIDER_STANDARD_MESSAGES = "snowflake-standard-messages"
@@ -93,49 +60,21 @@ def build_providers(ruamel_map):
 
     # Shared multi-API Standard Proxy (snowflake-proxy-cortexrestapi) providers
     # with dynamic catalog discovery (discover_models: True) across all 3 APIs:
-    for slug, display, suffix, mode in (
-        (PROVIDER_STANDARD_CHAT, "Snowflake-Standard-Chat", "/chat/v1", "chat_completions"),
-        (PROVIDER_STANDARD_RESPONSES, "Snowflake-Standard-Responses", "/responses/v1", "codex_responses"),
-        (PROVIDER_STANDARD_MESSAGES, "Snowflake-Standard-Messages", "/messages", "anthropic_messages"),
+    for slug, display, suffix, mode, default_model, ctx_len in (
+        (PROVIDER_STANDARD_RESPONSES, "Snowflake-Standard-Responses", "/responses/v1", "codex_responses", "openai-gpt-6-astra", 1050000),
+        (PROVIDER_STANDARD_CHAT, "Snowflake-Standard-Chat", "/chat/v1", "chat_completions", "openai-gpt-6-luna", None),
+        (PROVIDER_STANDARD_MESSAGES, "Snowflake-Standard-Messages", "/messages", "anthropic_messages", "claude-opus-5-5", None),
     ):
         std = ruamel_map()
         std["name"] = display
         std["base_url"] = STANDARD_PROXY_ORIGIN + suffix
         std["api_mode"] = mode
         std["api_key"] = "internal-spcs"
-        std["context_length"] = 128000
+        std["model"] = default_model
+        if ctx_len is not None:
+            std["context_length"] = ctx_len
         std["discover_models"] = True
         providers[slug] = std
-
-    # Percorso via proxy: e' il DEFAULT perche' e' l'unico che funziona con i
-    # modelli Cortex. Hermes invia 'max_tokens', che Cortex rifiuta con HTTP 400
-    # ("deprecated in favor of max_completion_tokens"), e sceglie la chiave nuova
-    # solo per le famiglie OpenAI (gpt-4o/gpt-4.1/gpt-5/o1/o3/o4, vedi
-    # model_forces_max_completion_tokens in utils.py). Per claude-*, mistral-*,
-    # qwen3-* e simili la richiesta fallirebbe sempre, e Hermes riporterebbe
-    # quell'errore come "Context length exceeded (N tokens)". Il proxy rinomina
-    # il parametro e aggiunge l'header OAUTH.
-    proxy = ruamel_map()
-    proxy["name"] = "Snowflake Cortex (proxy locale :8080)"
-    proxy["base_url"] = PROXY_URL
-    proxy["api_mode"] = "chat_completions"
-    proxy["api_key"] = "spcs-proxy"
-    proxy["context_length"] = 128000
-    proxy["models"] = build_models(CORTEX_MODELS, ruamel_map)
-    providers[PROVIDER_PROXY] = proxy
-
-    # Percorso diretto: nessun processo intermedio, ma utilizzabile SOLO con
-    # modelli il cui nome fa scattare max_completion_tokens lato Hermes.
-    # Tenuto per diagnostica e per un eventuale allineamento futuro del wire.
-    direct = ruamel_map()
-    direct["name"] = "Snowflake Cortex (diretto — richiede modelli max_completion_tokens)"
-    direct["base_url"] = CORTEX_URL
-    direct["api_mode"] = "chat_completions"
-    direct["key_cmd"] = SESSION_TOKEN_CMD
-    direct["extra_headers"] = ruamel_map(OAUTH_HEADER)
-    direct["context_length"] = 128000
-    direct["models"] = build_models(CORTEX_MODELS, ruamel_map)
-    providers[PROVIDER_DIRECT] = direct
 
     ollama = ruamel_map()
     ollama["name"] = "Ollama SPCS (GPU pool)"
@@ -245,10 +184,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--provider",
-        default=PROVIDER_PROXY,
+        default=PROVIDER_STANDARD_RESPONSES,
         choices=[
-            PROVIDER_DIRECT,
-            PROVIDER_PROXY,
             PROVIDER_STANDARD_CHAT,
             PROVIDER_STANDARD_RESPONSES,
             PROVIDER_STANDARD_MESSAGES,

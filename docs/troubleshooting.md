@@ -56,6 +56,12 @@ This is not a Snowflake regression and not a per-model problem. It means the PAT
 ### Empty response with `finish_reason: length` on reasoning models
 `openai-gpt-5`, `-mini`, and `-nano` consume their token budget in reasoning before emitting text. Use at least 1024 tokens in probes and treat `finish_reason: length` with empty content as insufficient budget, not a model defect.
 
+### `Request payload too large (413)` and `Compression aborted: incomplete chunked read` on 1M-token Responses models
+When using `openai-gpt-6-astra` or `openai-gpt-6.1-sol` (`context_length: 1050000`) through `snowflake-proxy-cortexrestapi`:
+- Ensure the proxy sets `PROXY_MAX_BODY=33554432` (32 MiB) and `PROXY_MAX_RESPONSE=33554432` (32 MiB). A 1 MiB body limit will reject valid ~250k-token conversations carrying multi-round `reasoning.encrypted_content` blobs with `HTTP 413`, prematurely triggering Hermes overflow compression well below the 525,000-token threshold.
+- Ensure the proxy sets `PROXY_DEADLINE=600` (600 seconds) and `auxiliary_client.py` passes `reasoning={"effort": "low", "summary": "auto"}` on Responses auxiliary calls (`compression`, `title_generation`, `approval`) so context-compression summaries complete quickly without hitting a mid-stream proxy deadline (`incomplete chunked read`).
+- Persist any runtime patches on `/root/.hermes` (for example via `sitecustomize.py` in the persistent managed Python installation under `/root/.hermes/tools/.../site-packages/`) so SPCS pod reschedules do not revert files outside `/root`.
+
 ## Model Management
 
 ### Model appears in `SHOW CORTEX BASE MODELS` but returns `unknown model` on REST

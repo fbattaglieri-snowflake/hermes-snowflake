@@ -6,6 +6,8 @@ Run the **Deploy to Snowflake** workflow with an explicit image tag. The workflo
 
 **Never drop and recreate the Hermes service** during an upgrade. The block volume and the tailnet IP persistence are tied to the service object. Dropping the service detaches or deletes the volume.
 
+**Never run `hermes update` or `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash` inside the container.** In packaged SPCS images, `/usr/local/lib/hermes-agent` has no `.git` metadata by design (`✗ Not a git repository`), so `hermes update` aborts safely after creating a pre-update config snapshot. Running `install.sh` in-container would overwrite the pinned `Snowflake-Standard-*` runtime patches, break `/root/.hermes` symlinks, trip startup SHA-256 verification on the next boot, and be wiped on the next SPCS pod reschedule. Always upgrade by bumping `HERMES_GIT_SHA` in `docker/hermes/Dockerfile` and rebuilding the image.
+
 ## Suspend
 
 Use the **Operate Stack** workflow with `suspend`, or run:

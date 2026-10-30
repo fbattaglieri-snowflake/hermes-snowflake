@@ -16,6 +16,20 @@ Tailscale relays through the DERP node closest to your SPCS region. Latency is a
 ### Block volume masks image content
 `/root` is a block volume (see `size` in the service spec) mounted at runtime. Everything the installer writes under `/root` at build time is hidden. The image keeps a copy in `/opt/hermes-seed` and restores it with `cp -a -n` (no-clobber) at every boot. Anything that must survive a restart belongs under `/root`; anything that must not be masked belongs outside it.
 
+### `hermes update` fails with `✗ Not a git repository. Please reinstall`
+Running `hermes update` (or triggering the self-update prompt on CLI exit) inside the SPCS container prints:
+
+```text
+✗ Not a git repository. Please reinstall:
+  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+**Do NOT run the `install.sh` command inside the container.**
+- In packaged SPCS images, `/usr/local/lib/hermes-agent` is assembled from a pinned source archive without a `.git` directory, coupled with persistent `/root/.hermes` runtime symlinks and SHA-256 startup integrity guards (`sitecustomize.py`).
+- Because `hermes update` aborts immediately at the `.git` check (after creating a harmless pre-update config snapshot under `/root/.hermes`), no running services (`hermes gateway`, `hermes serve`) or source files are altered.
+- Running `install.sh` inside a live container would overwrite the pinned sources and `Snowflake-Standard-*` adapter patches, break the `/root/.hermes` symlinks, fail the startup integrity check on the next container boot, and still be lost on the next SPCS pod reschedule (because `/usr/local` is outside the `/root` block volume).
+- To upgrade Hermes Agent to a newer upstream revision, update `HERMES_GIT_SHA` in `docker/hermes/Dockerfile`, rebuild and push a new immutable image, and apply it with `ALTER SERVICE`.
+
 ## Authentication and Client Connection
 
 ### `/auth/password-login` returns 422

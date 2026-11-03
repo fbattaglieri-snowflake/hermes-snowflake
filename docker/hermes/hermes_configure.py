@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Configura Hermes Agent per Snowflake Cortex dentro SPCS.
+"""Configure Hermes Agent for Snowflake Cortex inside Snowpark Container Services (SPCS).
 
-Perche' patchare invece di riscrivere: l'installer di Hermes genera un
-config.yaml da ~99KB con 23 sezioni di default documentate (compression,
-prompt_caching, agent, platform_toolsets, ...). Sostituirlo con un file
-minimale butterebbe via tutte quelle impostazioni, quindi qui si modificano
-solo le chiavi necessarie, preservando commenti e ordine via ruamel.yaml.
+Why patch instead of replacing: the upstream Hermes installer generates a ~99KB
+`config.yaml` with 23+ documented sections (`compression`, `prompt_caching`, `agent`,
+`platform_toolsets`, etc.). Replacing it with a minimal file would discard those
+defaults. This script updates only the required keys while preserving comments and
+key ordering via `ruamel.yaml`.
 
-Va eseguito con l'interprete del venv di Hermes, che ha ruamel:
+Run with the Hermes virtualenv Python interpreter:
     /usr/local/lib/hermes-agent/venv/bin/python /opt/hermes_configure.py
 
-Idempotente: riscrive solo se il marker di versione non e' presente, a meno
-di --force.
+Idempotent: rewrites only when the version marker is absent or `--force` is passed.
 """
 import argparse
 import json
@@ -21,29 +20,45 @@ import sys
 import time
 
 CONFIG_PATH = "/root/.hermes/config.yaml"
+MODELS_PATH = os.environ.get("CORTEX_MODELS_PATH", "/opt/cortex_models.json")
 MARKER_KEY = "x_spcs_config_version"
-MARKER_VALUE = "v9"
+MARKER_VALUE = "v10"
 
 SNOWFLAKE_HOST = os.environ.get(
-    "SNOWFLAKE_HOST", "localhost"  # overridden by SNOWFLAKE_HOST env var injected by SPCS
+    "SNOWFLAKE_HOST", "localhost"  # overridden by SNOWFLAKE_HOST injected by SPCS
 )
 CORTEX_URL = "https://%s/api/v2/cortex/v1" % SNOWFLAKE_HOST
 PROXY_URL = "http://127.0.0.1:8080/v1"
 STANDARD_PROXY_ORIGIN = os.environ.get(
-    "STANDARD_PROXY_ORIGIN", "http://llm-proxy-standard.namespace.svc.spcs.internal:8080"
+    "STANDARD_PROXY_ORIGIN",
+    "http://llm-proxy-standard.core.svc.spcs.internal:8080",
 ).rstrip("/")
 OLLAMA_URL = os.environ.get(
-    "OLLAMA_HOST", "http://ollama-service:11434"  # override with OLLAMA_HOST
+    "OLLAMA_HOST", "http://ollama-service:11434"
 ).rstrip("/") + "/v1"
 
 DEFAULT_MODEL = "openai-gpt-6-astra"
-
 OLLAMA_MODELS = {"muse-glimmer:30b": 128000}
 
 PROVIDER_STANDARD_CHAT = "snowflake-standard-chat"
 PROVIDER_STANDARD_RESPONSES = "snowflake-standard-responses"
 PROVIDER_STANDARD_MESSAGES = "snowflake-standard-messages"
 PROVIDER_OLLAMA = "ollama-spcs"
+PROVIDER_LEGACY_PROXY = "snowflake-cortex-proxy"
+PROVIDER_DIRECT_CORTEX = "snowflake-cortex"
+
+
+def load_fallback_models():
+    """Load the static fallback catalog from models.json when needed."""
+    if not os.path.exists(MODELS_PATH):
+        return {"claude-sonnet-5": 200000}
+    try:
+        with open(MODELS_PATH) as fh:
+            doc = json.load(fh)
+        models = doc.get("models") or {}
+        return {str(k): int(v) for k, v in models.items()} or {"claude-sonnet-5": 200000}
+    except (OSError, ValueError, TypeError):
+        return {"claude-sonnet-5": 200000}
 
 
 def build_models(mapping, ruamel_map):
@@ -55,16 +70,38 @@ def build_models(mapping, ruamel_map):
     return out
 
 
-def build_providers(ruamel_map):
+def build_providers(ruamel_map, selected_provider=PROVIDER_STANDARD_RESPONSES):
     providers = ruamel_map()
 
     # Shared multi-API Standard Proxy (snowflake-proxy-cortexrestapi) providers
     # with dynamic catalog discovery (discover_models: True) across all 3 APIs:
-    for slug, display, suffix, mode, default_model, ctx_len in (
-        (PROVIDER_STANDARD_RESPONSES, "Snowflake-Standard-Responses", "/responses/v1", "codex_responses", "openai-gpt-6-astra", 1050000),
-        (PROVIDER_STANDARD_CHAT, "Snowflake-Standard-Chat", "/chat/v1", "chat_completions", "openai-gpt-6-luna", None),
-        (PROVIDER_STANDARD_MESSAGES, "Snowflake-Standard-Messages", "/messages", "anthropic_messages", "claude-opus-5-5", None),
-    ):
+    standard_specs = (
+        (
+            PROVIDER_STANDARD_RESPONSES,
+            "Snowflake-Standard-Responses",
+            "/responses/v1",
+            "codex_responses",
+            "openai-gpt-6-astra",
+            1050000,
+        ),
+        (
+            PROVIDER_STANDARD_CHAT,
+            "Snowflake-Standard-Chat",
+            "/chat/v1",
+            "chat_completions",
+            "openai-gpt-6-luna",
+            None,
+        ),
+        (
+            PROVIDER_STANDARD_MESSAGES,
+            "Snowflake-Standard-Messages",
+            "/messages",
+            "anthropic_messages",
+            "claude-opus-5-5",
+            None,
+        ),
+    )
+    for slug, display, suffix, mode, default_model, ctx_len in standard_specs:
         std = ruamel_map()
         std["name"] = display
         std["base_url"] = STANDARD_PROXY_ORIGIN + suffix
@@ -82,10 +119,34 @@ def build_providers(ruamel_map):
     ollama["api_mode"] = "chat_completions"
     ollama["api_key"] = "ollama"
     ollama["context_length"] = 128000
-    # I cold start su GPU sono lenti: il default fallirebbe per timeout.
+    # GPU cold starts can take up to several minutes on first load.
     ollama["request_timeout_seconds"] = 600
     ollama["models"] = build_models(OLLAMA_MODELS, ruamel_map)
     providers[PROVIDER_OLLAMA] = ollama
+
+    # Optional single-container embedded fallback providers (registered only when
+    # explicitly selected so the default Model Picker stays clean with the 3
+    # Snowflake-Standard-* providers + Ollama).
+    if selected_provider == PROVIDER_LEGACY_PROXY:
+        fallback_models = load_fallback_models()
+        legacy = ruamel_map()
+        legacy["name"] = "Snowflake Cortex (Embedded Loopback Proxy)"
+        legacy["base_url"] = PROXY_URL
+        legacy["api_mode"] = "chat_completions"
+        legacy["api_key"] = "spcs-proxy"
+        legacy["context_length"] = 200000
+        legacy["models"] = build_models(fallback_models, ruamel_map)
+        providers[PROVIDER_LEGACY_PROXY] = legacy
+    elif selected_provider == PROVIDER_DIRECT_CORTEX:
+        fallback_models = load_fallback_models()
+        direct = ruamel_map()
+        direct["name"] = "Snowflake Cortex (Direct OAuth)"
+        direct["base_url"] = CORTEX_URL
+        direct["api_mode"] = "chat_completions"
+        direct["key_cmd"] = "/opt/spcs_token.sh"
+        direct["context_length"] = 200000
+        direct["models"] = build_models(fallback_models, ruamel_map)
+        providers[PROVIDER_DIRECT_CORTEX] = direct
 
     return providers
 
@@ -94,11 +155,7 @@ ENV_PATH = "/root/.hermes/.env"
 
 
 def migrate_terminal_cwd():
-    """Sposta TERMINAL_CWD da .env a config.yaml (Hermes lo segnala come deprecato).
-
-    Ritorna il valore trovato, o None se non c'e' nulla da migrare. Commenta la riga
-    nel .env cosi' l'avviso non ricompare ad ogni avvio.
-    """
+    """Move deprecated TERMINAL_CWD from .env into config.yaml (terminal.cwd)."""
     if not os.path.exists(ENV_PATH):
         return None
     try:
@@ -111,13 +168,12 @@ def migrate_terminal_cwd():
     out = []
     for line in lines:
         stripped = line.strip()
-        # Accetta anche "export TERMINAL_CWD=..." e spazi attorno all'uguale.
         pfx = "export "
         candidate = stripped[len(pfx):].strip() if stripped.startswith(pfx) else stripped
         key = candidate.split("=", 1)[0].strip() if "=" in candidate else ""
         if key == "TERMINAL_CWD" and not stripped.startswith("#"):
             value = candidate.split("=", 1)[1].strip().strip("\"'")
-            out.append("# migrato in config.yaml (terminal.cwd): " + line)
+            out.append("# migrated to config.yaml (terminal.cwd): " + line)
         else:
             out.append(line)
 
@@ -131,18 +187,12 @@ def migrate_terminal_cwd():
     return value
 
 
-# Valori che Hermes NON considera un cwd esplicito: con uno di questi (o con la
-# chiave assente) l'avviso di deprecazione ricompare. Fonte:
-# hermes_cli/config.py::warn_deprecated_cwd_env_vars.
-CWD_NON_ESPLICITI = {".", "auto", "cwd", ""}
-
-# Fallback quando non c'e' nulla da cui dedurre il path: /root e' la home del
-# container ed e' su volume persistente.
+NON_EXPLICIT_CWDS = {".", "auto", "cwd", ""}
 CWD_DEFAULT = "/root"
 
 
-def leggi_terminal_cwd(cfg):
-    """Ritorna terminal.cwd dal config, o None se assente/non valido."""
+def read_terminal_cwd(cfg):
+    """Return terminal.cwd from config, or None if missing/invalid."""
     terminal = cfg.get("terminal")
     if not isinstance(terminal, dict):
         return None
@@ -150,33 +200,17 @@ def leggi_terminal_cwd(cfg):
     return value if isinstance(value, str) else None
 
 
-def risolvi_terminal_cwd(cfg, cwd_migrato):
-    """Decide il valore di terminal.cwd da scrivere.
-
-    Perche' serve: warn_deprecated_cwd_env_vars avvisa quando TERMINAL_CWD e'
-    nel PROCESS env (non nel file .env, malgrado il testo del messaggio dica
-    "found in .env") E terminal.cwd non e' un path esplicito. Hermes stesso
-    fa il bridge terminal.cwd -> TERMINAL_CWD, quindi la variabile resta
-    nell'ambiente comunque: l'unica leva che spegne l'avviso in modo stabile e'
-    avere un terminal.cwd esplicito in config.yaml.
-
-    La versione precedente scriveva terminal.cwd solo quando trovava una riga
-    TERMINAL_CWD ancora attiva nel .env. Al primo giro la riga veniva
-    commentata, quindi dal secondo giro in poi cwd_migrato era None e
-    terminal.cwd non veniva piu' scritto: l'avviso tornava ad ogni avvio.
-    Qui il valore viene garantito ad ogni esecuzione, in ordine di preferenza:
-    valore migrato dal .env, TERMINAL_CWD gia' nell'ambiente, valore esplicito
-    gia' in config, infine CWD_DEFAULT.
-    """
-    for candidato in (
-        cwd_migrato,
+def resolve_terminal_cwd(cfg, migrated_cwd):
+    """Resolve the explicit terminal.cwd path to write into config.yaml."""
+    for candidate in (
+        migrated_cwd,
         os.environ.get("TERMINAL_CWD"),
-        leggi_terminal_cwd(cfg),
+        read_terminal_cwd(cfg),
     ):
-        if isinstance(candidato, str):
-            candidato = candidato.strip()
-            if candidato and candidato not in CWD_NON_ESPLICITI:
-                return candidato
+        if isinstance(candidate, str):
+            candidate = candidate.strip()
+            if candidate and candidate not in NON_EXPLICIT_CWDS:
+                return candidate
     return CWD_DEFAULT
 
 
@@ -190,12 +224,16 @@ def main():
             PROVIDER_STANDARD_RESPONSES,
             PROVIDER_STANDARD_MESSAGES,
             PROVIDER_OLLAMA,
+            PROVIDER_LEGACY_PROXY,
+            PROVIDER_DIRECT_CORTEX,
         ],
         help="provider to activate as the default",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
-        "--force", action="store_true", help="riscrive anche se il marker c'e' gia'"
+        "--force",
+        action="store_true",
+        help="rewrite config even when the version marker is already present",
     )
     args = parser.parse_args()
 
@@ -204,70 +242,59 @@ def main():
         from ruamel.yaml.comments import CommentedMap
     except ImportError:
         sys.exit(
-            "ruamel.yaml non disponibile: eseguire con "
+            "ruamel.yaml is unavailable: run with "
             "/usr/local/lib/hermes-agent/venv/bin/python"
         )
 
     if not os.path.exists(CONFIG_PATH):
-        sys.exit("config non trovato in %s" % CONFIG_PATH)
+        sys.exit("config not found at %s" % CONFIG_PATH)
 
     yaml = YAML()
     yaml.preserve_quotes = True
-    # Il config di default ha righe lunghe di commento: senza questo ruamel le
-    # riavvolge e il diff diventa illeggibile.
     yaml.width = 4096
 
     with open(CONFIG_PATH) as fh:
         cfg = yaml.load(fh)
 
-    # Va fatta comunque: se il .env contiene ancora TERMINAL_CWD, Hermes stampa un
-    # avviso di deprecazione ad ogni avvio anche quando il config e' già alla versione.
-    cwd_migrato = migrate_terminal_cwd()
-    cwd_desiderato = risolvi_terminal_cwd(cfg, cwd_migrato)
-    cwd_da_scrivere = (
-        cwd_desiderato if cwd_desiderato != leggi_terminal_cwd(cfg) else None
+    migrated_cwd = migrate_terminal_cwd()
+    desired_cwd = resolve_terminal_cwd(cfg, migrated_cwd)
+    cwd_to_write = (
+        desired_cwd if desired_cwd != read_terminal_cwd(cfg) else None
     )
 
     if (
         cfg.get(MARKER_KEY) == MARKER_VALUE
         and not args.force
-        and cwd_migrato is None
-        and cwd_da_scrivere is None
+        and migrated_cwd is None
+        and cwd_to_write is None
     ):
-        print("config già alla versione %s — nessuna modifica" % MARKER_VALUE)
+        print("config already at version %s — no changes needed" % MARKER_VALUE)
         return
 
     shutil.copy2(CONFIG_PATH, "%s.bak.%d" % (CONFIG_PATH, int(time.time())))
 
-    if cwd_da_scrivere is not None:
+    if cwd_to_write is not None:
         terminal = cfg.get("terminal")
         if terminal is None:
             terminal = CommentedMap()
             cfg["terminal"] = terminal
-        terminal["cwd"] = cwd_da_scrivere
-        if cwd_migrato is not None:
-            print("TERMINAL_CWD=%r migrato da .env a terminal.cwd" % cwd_migrato)
+        terminal["cwd"] = cwd_to_write
+        if migrated_cwd is not None:
+            print("TERMINAL_CWD=%r migrated from .env to terminal.cwd" % migrated_cwd)
         else:
-            print("terminal.cwd impostato a %r (silenzia l'avviso di deprecazione)"
-                  % cwd_da_scrivere)
+            print("terminal.cwd set to %r" % cwd_to_write)
 
     model = cfg.get("model")
     if model is None:
         model = CommentedMap()
         cfg["model"] = model
 
-    providers = build_providers(CommentedMap)
+    providers = build_providers(CommentedMap, selected_provider=args.provider)
     active = providers[args.provider]
 
     model["provider"] = args.provider
     model["default"] = args.model
-    # Per un provider named vince sempre providers.<slug>.base_url: model.base_url
-    # viene ignorato. Lo allineiamo comunque per non lasciare nel config un
-    # riferimento a openrouter.ai che trae in inganno chi lo legge.
     model["base_url"] = active["base_url"]
-
-    # Un model.context_length globale avrebbe priorita' su quello per-modello
-    # (step 0 contro step 0c) e resterebbe sbagliato cambiando modello.
     model.pop("context_length", None)
 
     existing = cfg.get("providers")
@@ -283,7 +310,7 @@ def main():
         yaml.dump(cfg, fh)
 
     print(
-        "config patchato: provider=%s model=%s base_url=%s"
+        "config patched: provider=%s model=%s base_url=%s"
         % (args.provider, args.model, active["base_url"])
     )
 

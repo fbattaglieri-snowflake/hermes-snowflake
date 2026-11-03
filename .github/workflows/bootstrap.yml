@@ -13,13 +13,13 @@ concurrency:
 
 jobs:
   bootstrap:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: bootstrap
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
-      - uses: snowflakedb/snowflake-actions@1160898243c351349621a6c2bac2e455ab1077b2 # v3
+      - uses: snowflakedb/snowflake-actions@1160898243c351349621a6c2bac2e455ab1077b2  # v3
         with:
           use-oidc: true
           cli-version: "3.16"
@@ -47,6 +47,14 @@ jobs:
           echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SSH_PUBKEY"
           echo "    SET SECRET_STRING = '<your SSH public key>';"
           echo ""
+          echo "  -- Hermes Desktop Dashboard Basic Auth"
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_DASH_USERNAME"
+          echo "    SET SECRET_STRING = '<dashboard-username>';"
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_DASH_PASSWORD_HASH"
+          echo "    SET SECRET_STRING = '<scrypt-password-hash>';"
+          echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_DASH_SECRET"
+          echo "    SET SECRET_STRING = '<stable-random-signing-secret>';"
+          echo ""
           echo "  -- Optional: Cloudflare tunnel"
           echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.CF_TUNNEL_TOKEN"
           echo "    SET SECRET_STRING = '<your Cloudflare tunnel token>';"
@@ -58,9 +66,5 @@ jobs:
           echo "    SET SECRET_STRING = '<your Telegram chat_id>';"
           echo ""
           echo "  -- Optional: Tailscale, for the Desktop Remote gateway on 9119."
-          echo "  -- The key MUST be reusable and non-ephemeral: a single-use key works"
-          echo "  -- only on the first boot, and an ephemeral one changes the tailnet IP"
-          echo "  -- on every restart. Generate it at:"
-          echo "  --   https://login.tailscale.com/admin/settings/keys"
           echo "  ALTER SECRET ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.TS_AUTHKEY"
           echo "    SET SECRET_STRING = '<your tskey-auth-...>';"

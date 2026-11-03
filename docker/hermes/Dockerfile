@@ -9,26 +9,21 @@ RUN apt-get update && apt-get install -y \
     build-essential zstd ttyd \
     && rm -rf /var/lib/apt/lists/*
 
-# Installa Ollama CLI
+# Install Ollama CLI
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
-# Installa cloudflared (pinned version for reproducible builds)
+# Install cloudflared (pinned version for reproducible builds)
 ARG CLOUDFLARED_VERSION=2026.8.3
 RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
     -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared && \
     cloudflared --version
 
-# Tailscale, per il Remote gateway del Desktop.
+# Install Tailscale for the Hermes Desktop Remote Gateway (:9119).
 #
-# Va nell'immagine e NON sotto /root: il volume block montato su /root
-# mascherebbe i binari, quindi un download a runtime andrebbe rifatto a ogni
-# ricreazione del container. Lo *stato* invece deve stare sul volume, altrimenti
-# il nodo si re-registra a ogni boot e l'IP del tailnet cambia, obbligando a
-# riconfigurare ogni client (vedi start.sh).
-#
-# Versione pinnata per lo stesso motivo del pin di Hermes: una build non
-# riproducibile trasforma un rebuild fatto per altro in un aggiornamento di
-# Tailscale non richiesto.
+# Binaries must reside outside /root because the SPCS persistent block volume
+# mounted at /root would mask any files written under /root during image build.
+# Conversely, tailscaled state (/root/tailscale/tailscaled.state) lives on the
+# persistent block volume so the node keeps a stable tailnet IP across restarts.
 ARG TAILSCALE_VERSION=1.102.3
 RUN set -eu; \
     curl -fsSL -o /tmp/ts.tgz \
@@ -39,7 +34,7 @@ RUN set -eu; \
     rm -rf /tmp/ts.tgz "/tmp/tailscale_${TAILSCALE_VERSION}_amd64"; \
     tailscaled --version | head -1
 
-# Installa pacchetti Python
+# Install Python helper packages used by embedded tools
 RUN pip3 install --break-system-packages --ignore-installed \
     openai==3.7.0 \
     anthropic==1.3.0 \
@@ -48,66 +43,44 @@ RUN pip3 install --break-system-packages --ignore-installed \
     PyJWT==2.13.0 \
     cryptography==50.0.1
 
-# Installa Hermes Agent (nell'immagine — non richiede reinstall ad ogni restart).
-# Il volume block viene montato su /root a runtime: qualsiasi cosa installata sotto
-# /root a build time sarebbe mascherata. Verifichiamo quindi il layout FHS.
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && \
-    HERMES_BIN="$(command -v hermes || true)" && \
-    if [ -z "$HERMES_BIN" ]; then echo "ERRORE: hermes non installato" >&2; exit 1; fi && \
-    case "$HERMES_BIN" in \
-      /root/*) echo "ERRORE: hermes in $HERMES_BIN, sarebbe mascherato dal volume su /root" >&2; exit 1 ;; \
-    esac && \
-    echo "hermes installato in $HERMES_BIN"
-
-# Pin di versione. L'installer upstream clona HEAD e non espone alcun flag di
-# revisione (`hermes update` accetta solo --branch, non uno SHA), quindi senza
-# questo passo la build NON e' riproducibile: due build dello stesso commit di
-# questo repository possono contenere versioni diverse di Hermes, e un rebuild
-# fatto per una patch del proxy fa saltare l'agente a una versione arbitraria,
-# mescolando due cambiamenti in uno.
+# Install Hermes Agent outside /root so the runtime block volume mount does not
+# mask the checkout, Python environments (installs/), or managed runtime tools.
 #
-# Sovrascrivibile con --build-arg HERMES_GIT_SHA=<sha> per aggiornare Hermes in
-# modo esplicito e tracciabile.
-ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
+# Build uses a dedicated home (/opt/hermes) with checkout in /opt/hermes/hermes-agent
+# and HERMES_RUNTIME_DIR=/opt/hermes/tools. At runtime, HERMES_HOME is /root/.hermes
+# (persisted on block storage) and start.sh links /opt/hermes/installs into it.
+# /usr/local/lib/hermes-agent is kept as a stable symlink alias.
+# --skip-computer-use avoids cua-driver, which requires X11 libraries in headless SPCS.
+# --commit pins the exact upstream revision for deterministic, reproducible builds.
+ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
+ARG HERMES_GIT_SHA=4d04303818b61bf3aa09278af48356315515965b
 RUN set -eu; \
-    REPO=/usr/local/lib/hermes-agent; \
-    if ! git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1; then \
-        echo "ERRORE: $REPO non e' un repo git, pin impossibile" >&2; exit 1; \
+    REPO=/opt/hermes/hermes-agent; \
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh; \
+    HERMES_HOME=/opt/hermes bash /tmp/hermes-install.sh --non-interactive \
+      --skip-computer-use --dir "$REPO" --commit "$HERMES_GIT_SHA"; \
+    rm -f /tmp/hermes-install.sh; \
+    test -x "$REPO/.hermes/bin/hermes" || { echo "ERROR: hermes launcher missing" >&2; exit 1; }; \
+    ln -sfn "$REPO/.hermes/bin/hermes" /usr/local/bin/hermes; \
+    ln -sfn "$REPO" /usr/local/lib/hermes-agent; \
+    HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"; \
+    if [ "$HEAD_SHA" != "$HERMES_GIT_SHA" ]; then \
+      echo "ERROR: checked out $HEAD_SHA, expected $HERMES_GIT_SHA" >&2; exit 1; \
     fi; \
-    git -C "$REPO" fetch --quiet origin "$HERMES_GIT_SHA" \
-      || git -C "$REPO" fetch --quiet --unshallow origin \
-      || git -C "$REPO" fetch --quiet origin; \
-    git -C "$REPO" checkout --quiet --detach "$HERMES_GIT_SHA"; \
-    VENV_PY="$REPO/venv/bin/python"; \
-    UV="$(command -v uv || echo /root/.hermes/bin/uv)"; \
-    # L'installer risolve le dipendenze da uv.lock, non da requirements.txt:
-    # senza ri-sync il venv resterebbe quello di HEAD sopra il codice pinnato,
-    # cioe' esattamente la combinazione mai testata da nessuno.
-    if [ -f "$REPO/uv.lock" ]; then \
-        ( cd "$REPO" && VIRTUAL_ENV="$REPO/venv" "$UV" sync --frozen ); \
-    elif [ -f "$REPO/requirements.txt" ]; then \
-        "$VENV_PY" -m pip install -r "$REPO/requirements.txt" \
-          || "$UV" pip install --python "$VENV_PY" -r "$REPO/requirements.txt"; \
-    else \
-        echo "ERRORE: ne uv.lock ne requirements.txt in $REPO" >&2; exit 1; \
+    VENV_CFG="$(find /opt/hermes/installs -path '*/environments/*/venv/pyvenv.cfg')"; \
+    if [ "$(printf '%s\n' "$VENV_CFG" | grep -c .)" != 1 ]; then \
+      echo "ERROR: expected a single Hermes environment, found: $VENV_CFG" >&2; exit 1; \
     fi; \
-    hermes --version; \
-    echo "hermes pinnato a $HERMES_GIT_SHA"
+    ln -sfn "$(dirname "$VENV_CFG")" "$REPO/venv"; \
+    "$REPO/venv/bin/python" -c 'import hermes_cli'; \
+    mkdir -p /root/.hermes && ln -sfn /opt/hermes/installs /root/.hermes/installs; \
+    HERMES_HOME=/root/.hermes hermes --version; \
+    echo "hermes $HEAD_SHA installed in $REPO"
 
-# python-telegram-bot: dipendenza di `hermes send --to telegram`, che senza di
-# essa esce con 1. L'installer di Hermes non la include.
-#
-# Va nell'immagine, non a runtime: il venv sta sotto /usr/local, che NON e' il
-# volume persistente (solo /root lo e'). Un `uv pip install` eseguito
-# dall'agente finisce nel layer effimero del container e sparisce alla prima
-# ricreazione — suspend/resume, ALTER SERVICE, restart — riportando l'errore.
-#
-# pip non e' esposto dentro il venv (gestito da uv), quindi si tenta prima
-# `python -m pip` e si ricade su uv. L'import finale e' un'asserzione: se il
-# pacchetto non e' importabile la build fallisce qui, invece di lasciare il
-# problema emergere al primo invio.
+# Install python-telegram-bot inside the Hermes virtualenv (required by
+# `hermes send --to telegram` and the Telegram gateway listener).
 RUN VENV_PY=/usr/local/lib/hermes-agent/venv/bin/python && \
-    UV="$(command -v uv || echo /root/.hermes/bin/uv)" && \
+    UV="$(command -v uv || find "$HERMES_RUNTIME_DIR" -type f -name uv -perm -u+x | head -1)" && \
     if "$VENV_PY" -m pip --version > /dev/null 2>&1; then \
         "$VENV_PY" -m pip install python-telegram-bot; \
     else \
@@ -115,31 +88,30 @@ RUN VENV_PY=/usr/local/lib/hermes-agent/venv/bin/python && \
     fi && \
     "$VENV_PY" -c "import telegram; print('python-telegram-bot', telegram.__version__)"
 
-# Proxy OpenAI->Cortex nell'immagine: start.sh lo copia su /root/.hermes ad ogni boot
+# Embedded single-container fallback OpenAI->Cortex proxy
 COPY proxy/cortex_proxy.py /opt/cortex_proxy.py
 
-# Seed di /root/.hermes: l'installer scrive qui config.yaml, .env, SOUL.md e ~6.6MB
-# di skill bundled, ma a runtime il volume block montato su /root le maschera.
-# Le mettiamo al riparo in /opt/hermes-seed; start.sh le ripristina se mancanti.
+# Seed directory for /root/.hermes (config.yaml, .env, SOUL.md, and bundled skills).
+# Excludes checkout, environments, runtime tools, caches, logs, telemetry, and backups.
 RUN mkdir -p /opt/hermes-seed && \
-    cp -a /root/.hermes/. /opt/hermes-seed/ && \
-    test -d /opt/hermes-seed/skills || (echo "ERRORE: seed skills mancante" >&2; exit 1) && \
-    echo "seed creato: $(du -sh /opt/hermes-seed | cut -f1)"
+    tar -C /opt/hermes --exclude=./hermes-agent --exclude=./installs --exclude=./tools \
+      --exclude=./cache --exclude=./logs --exclude=./telemetry --exclude=./backups \
+      -cf - . | tar -C /opt/hermes-seed -xf - && \
+    test -d /opt/hermes-seed/skills || (echo "ERROR: seed skills directory missing" >&2; exit 1) && \
+    echo "seed created: $(du -sh /opt/hermes-seed | cut -f1)"
 
-# Script di configurazione: patcha il config.yaml generato dall'installer invece di
-# sostituirlo (il default e' ~99KB di impostazioni che non vanno perse).
+# Configuration patcher and SOUL.md migration helper
 COPY docker/hermes/hermes_configure.py /opt/hermes_configure.py
+COPY docker/hermes/migrate_soul.py /opt/migrate_soul.py
 
-# Elenco modelli Cortex verificati: sorgente unica letta sia dal proxy sia dal
-# configuratore, così le due liste non possono divergere.
+# Verified Cortex models catalog for embedded fallback proxy
 COPY proxy/models.json /opt/cortex_models.json
 
-# Helper credenziali: stampa il session token SPCS come JSON con TTL breve,
-# usato da 'key_cmd' nel config di Hermes.
+# SPCS rotating OAuth session token helper
 COPY docker/hermes/spcs_token.sh /opt/spcs_token.sh
 RUN chmod +x /opt/spcs_token.sh
 
-# SSH config
+# SSH daemon configuration
 RUN mkdir /var/run/sshd && \
     sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \

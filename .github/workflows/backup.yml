@@ -13,14 +13,14 @@ permissions:
 jobs:
   backup:
     if: vars.ENABLE_BACKUP == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     steps:
-      - uses: snowflakedb/snowflake-actions@v3
+      - uses: snowflakedb/snowflake-actions@1160898243c351349621a6c2bac2e455ab1077b2  # v3
         with:
           use-oidc: true
           cli-version: "3.16"
-      - name: Archive Hermes state to stage
+      - name: Create stage and block volume snapshot
         env:
           SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_DEPLOY_USER }}
@@ -30,17 +30,12 @@ jobs:
         run: |
           snow sql -x -q "CREATE STAGE IF NOT EXISTS ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_BACKUPS ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') COMMENT = 'Hermes state backup archives';"
 
-          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
-          ARCHIVE="hermes-state-${TIMESTAMP}.tgz"
-
-          # Create the archive inside the running container via EXECUTE_IMMEDIATE
-          # This requires the service to be running and the role to have OPERATE on it
+          SNAP_TS=$(date -u +%Y%m%d_%H%M%S)
+          SNAP_NAME="HERMES_STATE_${SNAP_TS}"
           snow sql -x -q "
-            CALL SYSTEM\$SEND_NOTIFICATIONS_TO_SERVICE(
-              '${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SERVICE',
-              0,
-              'bash -c \"tar czf /tmp/${ARCHIVE} --exclude=node --exclude=bin --exclude=cache --exclude=audio_cache --exclude=__pycache__ --exclude=models_dev_cache.json -C /root .hermes 2>/dev/null && echo BACKUP_OK || echo BACKUP_FAIL\"'
-            );
-          " 2>/dev/null || echo "::warning::SYSTEM\$SEND_NOTIFICATIONS_TO_SERVICE not available. Use manual backup via shell."
-
-          echo "::notice::If automated in-container backup is not supported in your region, use the manual procedure documented in docs/backup-recovery.md"
+            CREATE SNAPSHOT IF NOT EXISTS ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.${SNAP_NAME}
+              FROM SERVICE ${{ vars.SNOWFLAKE_DATABASE }}.${{ vars.SNOWFLAKE_SCHEMA }}.HERMES_SERVICE
+              VOLUME 'hermes-data'
+              INSTANCE 0
+              COMMENT = 'Automated SPCS block volume snapshot for Hermes';
+          " || echo "::warning::CREATE SNAPSHOT failed (check role privileges or docs/backup-recovery.md for manual tar archive procedure)."

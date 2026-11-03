@@ -9,6 +9,7 @@ spec:
       env:
         HERMES_PROVIDER: "{{ hermes_provider }}"
         HERMES_MODEL: "{{ hermes_model }}"
+        STANDARD_PROXY_ORIGIN: "{{ standard_proxy_origin }}"
         HERMES_SELFTEST: "1"
       resources:
         requests:
@@ -41,6 +42,18 @@ spec:
             objectName: "{{ database }}.{{ schema }}.TS_AUTHKEY"
           secretKeyRef: secret_string
           envVarName: TS_AUTHKEY
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.HERMES_DASH_USERNAME"
+          secretKeyRef: secret_string
+          envVarName: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.HERMES_DASH_PASSWORD_HASH"
+          secretKeyRef: secret_string
+          envVarName: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH
+        - snowflakeSecret:
+            objectName: "{{ database }}.{{ schema }}.HERMES_DASH_SECRET"
+          secretKeyRef: secret_string
+          envVarName: HERMES_DASHBOARD_BASIC_AUTH_SECRET
       readinessProbe:
         port: 7681
         path: /

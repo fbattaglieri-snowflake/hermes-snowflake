@@ -17,10 +17,10 @@ permissions:
 
 jobs:
   operate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     steps:
-      - uses: snowflakedb/snowflake-actions@1160898243c351349621a6c2bac2e455ab1077b2 # v3
+      - uses: snowflakedb/snowflake-actions@1160898243c351349621a6c2bac2e455ab1077b2  # v3
         with:
           use-oidc: true
           cli-version: "3.16"

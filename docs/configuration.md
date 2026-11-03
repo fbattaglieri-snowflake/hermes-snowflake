@@ -1,100 +1,96 @@
 # Configuration
 
-## GitHub Repository Variables
+## 1. GitHub Repository Variables
+
+Configure these variables in your GitHub repository under **Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions $\rightarrow$ Variables**:
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `SNOWFLAKE_ACCOUNT` | `org-account` | Account identifier for the CLI. |
-| `SNOWFLAKE_DATABASE` | `HERMES_PLATFORM` | Deployment database. |
-| `SNOWFLAKE_SCHEMA` | `CORE` | Deployment schema. |
-| `SNOWFLAKE_BOOTSTRAP_USER` | `HERMES_GITHUB_BOOTSTRAP` | OIDC bootstrap service user. |
-| `SNOWFLAKE_DEPLOY_USER` | `HERMES_GITHUB_DEPLOY` | OIDC production deploy service user. |
-| `SNOWFLAKE_BOOTSTRAP_ROLE` | `HERMES_GITHUB_BOOTSTRAP_ROLE` | Bootstrap role. |
-| `SNOWFLAKE_DEPLOY_ROLE` | `HERMES_GITHUB_DEPLOY_ROLE` | Production deploy role. |
-| `SNOWFLAKE_WAREHOUSE` | `HERMES_DEPLOY_WH` | Small warehouse for deployment SQL. |
-| `HERMES_COMPUTE_POOL` | `HERMES_CPU_POOL` | SPCS compute pool. |
-| `HERMES_INSTANCE_FAMILY` | `CPU_X64_M` | Compute pool instance family. **Not portable between clouds** — the available families differ on AWS, Azure, and GCP. Check the Snowflake `CREATE COMPUTE POOL` documentation for your platform before setting this; an unavailable family fails bootstrap. |
-| `HERMES_IMAGE_REPOSITORY` | `HERMES_IMAGES` | Hermes image repository. |
-| `CORTEX_PROXY_IMAGE_REPOSITORY` | `CORTEX_PROXY_IMAGES` | Proxy image repository. |
-| `HERMES_EGRESS_EAI` | `HERMES_EGRESS_EAI` | External Access Integration name. |
+| `SNOWFLAKE_ACCOUNT` | `org-account` | Snowflake account identifier used by Snowflake CLI. |
+| `SNOWFLAKE_DATABASE` | `HERMES_PLATFORM` | Target deployment database. |
+| `SNOWFLAKE_SCHEMA` | `CORE` | Target deployment schema. |
+| `SNOWFLAKE_BOOTSTRAP_USER` | `HERMES_GITHUB_BOOTSTRAP` | OIDC service user for `bootstrap.yml`. |
+| `SNOWFLAKE_DEPLOY_USER` | `HERMES_GITHUB_DEPLOY` | OIDC service user for `deploy.yml`, `operate.yml`, and `backup.yml`. |
+| `SNOWFLAKE_BOOTSTRAP_ROLE` | `HERMES_GITHUB_BOOTSTRAP_ROLE` | Role granted infrastructure creation privileges. |
+| `SNOWFLAKE_DEPLOY_ROLE` | `HERMES_GITHUB_DEPLOY_ROLE` | Least-privilege role for service deployment and operation. |
+| `SNOWFLAKE_WAREHOUSE` | `HERMES_DEPLOY_WH` | Warehouse used to execute deployment SQL. |
+| `HERMES_COMPUTE_POOL` | `HERMES_CPU_POOL` | SPCS compute pool name. |
+| `HERMES_INSTANCE_FAMILY` | `CPU_X64_M` | Compute pool instance family (check `CREATE COMPUTE POOL` docs for your cloud). |
+| `HERMES_IMAGE_REPOSITORY` | `HERMES_IMAGES` | SPCS image repository name. |
+| `HERMES_EGRESS_EAI` | `HERMES_EGRESS_EAI` | External Access Integration name for outbound HTTPS/DERP traffic. |
+| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.core.svc.spcs.internal:8080` | Internal SPCS DNS origin for [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi). |
+| `HERMES_PROVIDER` | `snowflake-standard-responses` | Default provider slug (`snowflake-standard-responses`, `snowflake-standard-chat`, `snowflake-standard-messages`, `ollama-spcs`, or `snowflake-cortex-proxy`). |
+| `HERMES_MODEL` | `openai-gpt-6-astra` | Default model ID set in `config.yaml` (`model.default`). |
+| `ENABLE_BACKUP` | `true` / `false` | Optional toggle for scheduled runs of `backup.yml`. |
 
-## Hermes Version Pin
+---
 
-The upstream installer clones `HEAD` and offers no revision flag (`hermes update` accepts only `--branch`, never a commit). The image therefore pins the revision explicitly:
+## 2. Hermes Upstream Revision Pin (`HERMES_GIT_SHA`)
+
+The upstream Hermes installer supports pinning an exact commit via `--commit`. `docker/hermes/Dockerfile` pins this revision explicitly:
 
 ```dockerfile
-ARG HERMES_GIT_SHA=13ce0c5c675e843af70d19c9e5144249cd51c8d1
+ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
+ARG HERMES_GIT_SHA=4d04303818b61bf3aa09278af48356315515965b
 ```
 
-Without the pin the build is **not reproducible**: two builds of the same commit of this repository can ship different Hermes versions, and a rebuild done to pick up a proxy fix silently bumps the agent as well, mixing two changes into one deployment.
+Why this matters:
+- **Reproducible Builds:** Two builds of the same commit in this repository always produce the exact same Hermes Agent revision and Python environment (`/opt/hermes/installs`).
+- **Outside `/root` Block Volume:** By installing into `/opt/hermes/hermes-agent` and `/opt/hermes/installs` and symlinking `/root/.hermes/installs` at boot, the runtime code is never masked by the `/root` block volume and automatically updates whenever you deploy a new image.
 
-To move to a newer revision, do it as its own change:
+To upgrade Hermes Agent to a newer upstream commit:
 
 ```bash
-docker build --build-arg HERMES_GIT_SHA=<sha> -f docker/hermes/Dockerfile .
+docker build --platform linux/amd64 --build-arg HERMES_GIT_SHA=<new-commit-sha> -f docker/hermes/Dockerfile .
 ```
 
-The pin step also runs `uv sync --frozen`, because the installer resolves dependencies from `uv.lock` rather than `requirements.txt`. Checking out a revision without re-syncing would leave the `HEAD` virtualenv on top of pinned code — a combination nobody has tested. For the same reason the pin must stay **before** the `python-telegram-bot` layer, so the sync cannot prune it.
+---
 
-## Container Environment Variables
+## 3. Container Environment Variables (`hermes.service.yaml`)
 
-Set in the service spec. `HERMES_PROVIDER` and `HERMES_MODEL` are rendered by the deploy workflow from the repository variables of the same name; the Telegram ones below are **not** in the default template and must be added to `infrastructure/specs/hermes.service.yaml` if you need them.
-
-| Variable | Example | Purpose |
+| Variable | Default / Example | Purpose |
 |---|---|---|
-| `HERMES_PROVIDER` | `snowflake-standard-messages` or `snowflake-cortex-proxy` | Provider slug written into `config.yaml` (`snowflake-standard-chat`, `snowflake-standard-responses`, `snowflake-standard-messages`, `snowflake-cortex-proxy`, `snowflake-cortex`, or `ollama-spcs`). |
-| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.namespace.svc.spcs.internal:8080` | Internal SPCS base origin for the shared multi-API [`snowflake-proxy-cortexrestapi`](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) service. |
-| `HERMES_MODEL` | `claude-opus-5` | Default model. `hermes_configure.py` assigns `model.default` from this; if unset it falls back to the script's default, so a config re-patch would silently change the active model. Setting it keeps the choice declarative in the spec instead of living only in block-volume state. |
-| `HERMES_SELFTEST` | `1` | Runs the boot self-tests and leaves the outcome in the service logs. Set to `0` to skip. |
-| `TELEGRAM_ALLOWED_USERS` | `123456789` | Optional allow-list of comma-separated **numeric** user IDs. A username is silently ignored: the adapter compares numeric IDs, so inbound messages are dropped with no log line at default verbosity. Outbound still works, which makes the bot look like it "receives but never answers". |
-| `TELEGRAM_HOME_CHANNEL` | `123456789` | Chat ID for outbound and cronjob delivery. Provided as a Snowflake secret in the default template. |
+| `HERMES_PROVIDER` | `snowflake-standard-responses` | Active provider slug written into `/root/.hermes/config.yaml`. |
+| `HERMES_MODEL` | `openai-gpt-6-astra` | Default model written into `model.default`. Keeping this declarative prevents cronjob inference-config drift across restarts. |
+| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.core.svc.spcs.internal:8080` | Base URL of the shared [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) service. |
+| `HERMES_SELFTEST` | `1` | Runs non-destructive boot self-tests and logs results to `SYSTEM$GET_SERVICE_LOGS`. Set to `0` to skip. |
+| `TELEGRAM_ALLOWED_USERS` | `123456789` | Optional comma-separated **numeric** Telegram user IDs (do not use `@username`). |
 
-## GitHub Secrets
+---
 
-None required for Snowflake authentication. GitHub Actions obtains a short-lived OIDC token.
+## 4. Snowflake Secrets (Created by `10_bootstrap.sql`)
 
-## Snowflake Secrets (Created at Runtime)
+GitHub Actions uses **passwordless OIDC Workload Identity Federation** — no long-lived Snowflake credentials are stored in GitHub. Runtime secrets are stored as **Snowflake Secrets** in your deployment schema and injected into the container by `infrastructure/specs/hermes.service.yaml`:
 
-These are created in the deployment schema by bootstrap or set manually. They are injected into the SPCS container as environment variables.
+| Snowflake Secret Name | Injected Container Env Var | Required? | Purpose |
+|---|---|---|---|
+| `HERMES_SSH_PUBKEY` | `SSH_PUBLIC_KEY` | Recommended | SSH public key written to `/root/.ssh/authorized_keys`. |
+| `HERMES_DASH_USERNAME` | `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` | Required for Desktop | Username for Hermes Desktop Remote Gateway (`:9119`). |
+| `HERMES_DASH_PASSWORD_HASH` | `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` | Required for Desktop | Scrypt hash of the dashboard password. |
+| `HERMES_DASH_SECRET` | `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | Required for Desktop | Stable cookie signing secret (must stay constant across restarts). |
+| `TS_AUTHKEY` | `TS_AUTHKEY` | Required for Desktop | Tailscale **reusable, non-ephemeral** auth key (`tskey-auth-...`). |
+| `TELEGRAM_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN` | Optional | Enables `hermes gateway run` (Telegram bot + cron ticker). |
+| `TELEGRAM_HOME_CHANNEL` | `TELEGRAM_HOME_CHANNEL` | Optional | Default Telegram `chat_id` for outbound notifications and cron delivery. |
+| `CF_TUNNEL_TOKEN` | `CF_TUNNEL_TOKEN` | Optional | Cloudflare tunnel token (`--protocol http2`). |
 
-| Secret Name | Env Var | Content |
-|---|---|---|
-| `HERMES_SSH_PUBKEY` | `SSH_PUBLIC_KEY` | SSH public key for fallback access. |
-| `CF_TUNNEL_TOKEN` | `CF_TUNNEL_TOKEN` | Cloudflare tunnel token. |
-| `TS_AUTHKEY` | `TS_AUTHKEY` | Tailscale reusable, non-ephemeral auth key. |
-| `HERMES_DASH_USERNAME` | `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` | Dashboard login username. |
-| `HERMES_DASH_PASSWORD_HASH` | `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` | Scrypt hash of the dashboard password. |
-| `HERMES_DASH_SECRET` | `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | Stable signing secret for session cookies. Must not change between restarts. |
+### Generating `HERMES_DASH_PASSWORD_HASH`
 
-## Generating the Password Hash
-
-Run this from inside the deployed container (web terminal at port 7681) or from any machine with the Hermes venv available:
+Run inside the container (via the web terminal on `:7681`) or any environment with the Hermes virtualenv:
 
 ```bash
-python -c "
+/usr/local/lib/hermes-agent/venv/bin/python -c "
 import sys
 sys.path.insert(0, '/usr/local/lib/hermes-agent')
 from plugins.dashboard_auth.basic import hash_password
-print(hash_password('your-password-here'))
+print(hash_password('your-strong-password'))
 "
 ```
 
-Store the output as the `HERMES_DASH_PASSWORD_HASH` secret value.
+### Creating the Tailscale Auth Key (`TS_AUTHKEY`)
 
-## Tailscale Auth Key
+Generate a key at `https://login.tailscale.com/admin/settings/keys` with:
+- **Reusable:** `Yes`
+- **Ephemeral:** `No` (ephemeral nodes are deleted on disconnect and lose their IP)
+- **Tag:** `tag:hermes-spcs` (recommended so node keys do not expire)
 
-Create a key at https://login.tailscale.com/admin/settings/keys with:
-- **Reusable: yes** (the container may restart and needs to re-authenticate)
-- **Ephemeral: no** (an ephemeral node is removed on disconnect, changing the tailnet IP)
-- **Pre-approved: yes** if device approval is enabled on the tailnet
-- **Tag: `tag:hermes-spcs`** recommended (tagged nodes have no expiring node key)
-
-Store the key as the `TS_AUTHKEY` Snowflake Secret.
-
-### When the key is actually used
-
-`start.sh` uses `TS_AUTHKEY` **only when there is no `tailscaled` state on the block volume yet** — in practice, the first boot after deployment. Afterwards the node rejoins from `/root/tailscale/tailscaled.state` and keeps the **same tailnet IP**, so clients never need reconfiguring. If the secret is empty and no state exists, the boot log says so explicitly and the Remote gateway stays unavailable; nothing else is affected.
-
-Tailscale does not issue non-expiring auth keys: the maximum lifetime is 90 days. That is not a problem while the state file survives, but if the volume is ever lost after the key has expired, re-registration needs a fresh key. Put the expiry date in a calendar rather than discovering it during an outage.
-
-The Tailscale binaries are pinned in the image via `ARG TAILSCALE_VERSION` and installed to `/usr/local/bin`, deliberately **outside `/root`**: the block volume mounted at `/root` would mask them, so a runtime download would have to be repeated on every container recreation. The state goes on the volume for the opposite reason — to keep the IP stable.
+`start.sh` uses `TS_AUTHKEY` **only on first boot** when `/root/tailscale/tailscaled.state` does not exist yet. On all subsequent boots, `tailscaled` re-authenticates from the persisted state file on the block volume and keeps the **exact same `100.x.y.z` tailnet IP**.

@@ -1,6 +1,7 @@
--- Creates all reusable Snowflake objects for the Hermes on SPCS deployment.
--- Secrets that require user-supplied values (SSH key, Cloudflare token, Telegram)
--- are created with empty strings. Set them manually before deploying the service:
+-- Idempotent bootstrap for Hermes on Snowpark Container Services (SPCS).
+-- Secrets that require user-supplied values (SSH key, Cloudflare token, Telegram,
+-- Tailscale auth key, and Dashboard credentials) are created with empty strings.
+-- Set them manually before deploying the service:
 --
 --   ALTER SECRET <% database %>.<% schema %>.HERMES_SSH_PUBKEY
 --     SET SECRET_STRING = '<your public key>';
@@ -41,7 +42,7 @@ CREATE NETWORK RULE IF NOT EXISTS <% database %>.<% schema %>.HERMES_EGRESS_WEB
   TYPE = HOST_PORT
   MODE = EGRESS
   VALUE_LIST = ('0.0.0.0:443', '0.0.0.0:80')
-  COMMENT = 'Outbound web egress for Hermes (Cloudflare tunnel, Telegram, agent tools)';
+  COMMENT = 'Outbound web egress for Hermes (Tailscale DERP, Cloudflare tunnel, Telegram, agent tools)';
 
 CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS <% egress_integration %>
   ALLOWED_NETWORK_RULES = (<% database %>.<% schema %>.HERMES_EGRESS_WEB)
@@ -49,39 +50,52 @@ CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS <% egress_integration %>
   ENABLED = TRUE
   COMMENT = 'Outbound web access for Hermes agent and tunnel';
 
--- SSH public key for remote access. Must be set before deploying.
+-- SSH public key for remote access. Set before deploying.
 CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.HERMES_SSH_PUBKEY
   TYPE = GENERIC_STRING
   SECRET_STRING = ''
   COMMENT = 'SSH public key for Hermes remote access. Set before deploying the service.';
 
--- Cloudflare tunnel token: optional; enables persistent remote access.
+-- Cloudflare tunnel token: optional; enables persistent remote access fallback.
 CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.CF_TUNNEL_TOKEN
   TYPE = GENERIC_STRING
   SECRET_STRING = ''
   COMMENT = 'Cloudflare tunnel token. Leave empty to disable the tunnel.';
 
--- Telegram: optional; enables hermes send --to telegram.
+-- Telegram: optional; enables hermes gateway and hermes send --to telegram.
 CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.TELEGRAM_BOT_TOKEN
   TYPE = GENERIC_STRING
   SECRET_STRING = ''
-  COMMENT = 'Telegram bot token. Leave empty to disable Telegram notifications.';
+  COMMENT = 'Telegram bot token. Leave empty to disable Telegram integration.';
 
 CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.TELEGRAM_HOME_CHANNEL
   TYPE = GENERIC_STRING
   SECRET_STRING = ''
   COMMENT = 'Telegram home channel ID (chat_id). Required when bot token is set.';
 
--- Tailscale: optional; enables the Desktop Remote gateway on port 9119.
--- Must be a REUSABLE, NON-EPHEMERAL auth key: a single-use key works on the
--- first boot only, and an ephemeral one makes Tailscale drop the node when it
--- goes offline, changing the tailnet IP on every restart. Needed only until
--- tailscaled state exists on the block volume, after which the node rejoins on
--- its own and keeps the same IP.
+-- Tailscale: enables the Desktop Remote gateway on port 9119.
+-- Must be a REUSABLE, NON-EPHEMERAL auth key (tskey-auth-...). Needed only on
+-- first boot until tailscaled state exists on the persistent block volume.
 CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.TS_AUTHKEY
   TYPE = GENERIC_STRING
   SECRET_STRING = ''
   COMMENT = 'Tailscale reusable auth key (tskey-auth-...). Leave empty to disable the Desktop Remote gateway.';
+
+-- Hermes Desktop Remote Gateway (:9119) Basic Auth credentials & cookie signing secret.
+CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.HERMES_DASH_USERNAME
+  TYPE = GENERIC_STRING
+  SECRET_STRING = ''
+  COMMENT = 'Hermes Desktop dashboard basic auth username.';
+
+CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.HERMES_DASH_PASSWORD_HASH
+  TYPE = GENERIC_STRING
+  SECRET_STRING = ''
+  COMMENT = 'Hermes Desktop dashboard scrypt password hash.';
+
+CREATE SECRET IF NOT EXISTS <% database %>.<% schema %>.HERMES_DASH_SECRET
+  TYPE = GENERIC_STRING
+  SECRET_STRING = ''
+  COMMENT = 'Stable signing secret for Hermes Desktop session cookies.';
 
 GRANT USAGE ON DATABASE <% database %> TO ROLE <% deploy_role %>;
 GRANT USAGE ON SCHEMA <% database %>.<% schema %> TO ROLE <% deploy_role %>;
@@ -96,4 +110,8 @@ GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_SSH_PUBKEY TO ROLE <% de
 GRANT READ ON SECRET <% database %>.<% schema %>.CF_TUNNEL_TOKEN TO ROLE <% deploy_role %>;
 GRANT READ ON SECRET <% database %>.<% schema %>.TELEGRAM_BOT_TOKEN TO ROLE <% deploy_role %>;
 GRANT READ ON SECRET <% database %>.<% schema %>.TELEGRAM_HOME_CHANNEL TO ROLE <% deploy_role %>;
+GRANT READ ON SECRET <% database %>.<% schema %>.TS_AUTHKEY TO ROLE <% deploy_role %>;
+GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_DASH_USERNAME TO ROLE <% deploy_role %>;
+GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_DASH_PASSWORD_HASH TO ROLE <% deploy_role %>;
+GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_DASH_SECRET TO ROLE <% deploy_role %>;
 GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO ROLE <% deploy_role %>;

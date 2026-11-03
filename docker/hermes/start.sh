@@ -1,11 +1,9 @@
 #!/bin/bash
 set -e
 
-# /root è block storage persistente: sopravvive a suspend/resume del servizio.
-# Il rovescio della medaglia è che il mount MASCHERA tutto ciò che l'immagine
-# contiene sotto /root — incluse le ~6.6MB di skill che l'installer di Hermes
-# scrive in /root/.hermes. Per questo l'immagine tiene una copia in
-# /opt/hermes-seed e qui la ripristiniamo.
+# /root is the persistent SPCS block volume that survives suspend/resume and restarts.
+# Because mounting /root masks everything written under /root during image build,
+# the image keeps a clean seed in /opt/hermes-seed and restores missing files here.
 
 HERMES_DIR=/root/.hermes
 SEED_DIR=/opt/hermes-seed
@@ -13,11 +11,10 @@ VENV_PY=/usr/local/lib/hermes-agent/venv/bin/python
 PROXY_PORT=8080
 PROXY_BASE="http://127.0.0.1:${PROXY_PORT}/v1"
 OLLAMA_BASE="${OLLAMA_INTERNAL_URL:-http://ollama-service:11434}"
-ACTIVE_PROVIDER="${HERMES_PROVIDER:-snowflake-cortex-proxy}"
-DEFAULT_MODEL="${HERMES_MODEL:-claude-sonnet-5}"
+ACTIVE_PROVIDER="${HERMES_PROVIDER:-snowflake-standard-responses}"
+DEFAULT_MODEL="${HERMES_MODEL:-openai-gpt-6-astra}"
+export STANDARD_PROXY_ORIGIN="${STANDARD_PROXY_ORIGIN:-http://llm-proxy-standard.core.svc.spcs.internal:8080}"
 
-# SPCS inietta SNOWFLAKE_HOST, ma il default tiene lo script utilizzabile anche
-# fuori. Esportato perché lo legge anche hermes_configure.py.
 export SNOWFLAKE_HOST="${SNOWFLAKE_HOST:-${SNOWFLAKE_HOST_DEFAULT:-localhost}}"
 
 log() { echo "[hermes] $*"; }
@@ -29,98 +26,77 @@ if [ -n "$SSH_PUBLIC_KEY" ]; then
     chmod 600 /root/.ssh/authorized_keys
 fi
 ssh-keygen -A
-service ssh start || log "WARN: avvio sshd fallito"
+service ssh start || log "WARN: sshd startup failed"
 
 # ---------------------------------------------------------------- PATH
-# Il container gira come root, quindi l'installer usa il layout FHS:
-# binario in /usr/local/bin, codice in /usr/local/lib/hermes-agent.
+# Binary launcher in /usr/local/bin, checkout in /opt/hermes/hermes-agent
+# (aliased at /usr/local/lib/hermes-agent).
 export PATH="/usr/local/bin:$PATH:/root/.local/bin:${HERMES_DIR}/bin"
 
 if command -v hermes > /dev/null 2>&1; then
-    log "hermes: $(command -v hermes)"
+    log "hermes binary: $(command -v hermes)"
 else
-    log "WARN: binario hermes non in PATH — l'immagine non lo contiene?"
+    log "WARN: hermes binary not in PATH"
 fi
 
 # ---------------------------------------------------------------- Seed /root/.hermes
 mkdir -p "$HERMES_DIR"
 if [ -d "$SEED_DIR" ]; then
-    # -n = no-clobber: i file già presenti sul volume (personalizzazioni utente,
-    # sessioni, memorie) non vengono toccati; si ripristina solo ciò che manca.
+    # -n = no-clobber: existing files on the block volume (sessions, memory,
+    # custom skills, configuration) are never overwritten.
     cp -a -n "$SEED_DIR/." "$HERMES_DIR/" 2>/dev/null || true
-    log "seed applicato — skill presenti: $(ls "$HERMES_DIR/skills" 2>/dev/null | wc -l)"
+    log "seed applied — skills present: $(ls "$HERMES_DIR/skills" 2>/dev/null | wc -l)"
 else
-    log "WARN: $SEED_DIR assente nell'immagine"
+    log "WARN: $SEED_DIR missing in image"
 fi
 
-# ---------------------------------------------------------------- Istruzioni Telegram
-# Hermes NON espone al modello un tool di invio messaggi: toolsets.py dichiara
-# esplicitamente che "agents do NOT get an agent-callable send_message tool —
-# outbound platform messaging is handled outside the agent loop (cron delivery,
-# the gateway kanban notifier, and the `hermes send` CLI)". Senza questa nota
-# l'agente, non trovando un tool adatto, ripiega su computer_use (che non puo'
-# funzionare: il container e' headless) oppure chiede all'utente come procedere.
-# La via corretta e' il tool `terminal`, che l'agente ha, con `hermes send`.
-# Il marcatore rende l'append idempotente ad ogni riavvio.
+# Link the Hermes Python environment (/opt/hermes/installs) into /root/.hermes/installs
+# so the runtime environment always matches the deployed image revision.
+if [ -d /opt/hermes/installs ]; then
+    if [ -e "$HERMES_DIR/installs" ] && [ ! -L "$HERMES_DIR/installs" ]; then
+        mv "$HERMES_DIR/installs" "$HERMES_DIR/installs.pre-image-$(date +%Y%m%d%H%M%S)"
+        log "existing installs/ directory backed up"
+    fi
+    ln -sfn /opt/hermes/installs "$HERMES_DIR/installs"
+fi
+
+# ---------------------------------------------------------------- Telegram SOUL.md instructions
+# Hermes does not expose an agent-callable send_message tool; outbound messaging
+# from inside the agent loop uses `hermes send --to telegram` via the terminal tool.
 SOUL_FILE="${HERMES_DIR}/SOUL.md"
-SOUL_MARK="<!-- spcs-telegram-v1 -->"
-if [ -f "$SOUL_FILE" ] && ! grep -qF "$SOUL_MARK" "$SOUL_FILE" 2>/dev/null; then
-    {
-        printf '\n%s\n' "$SOUL_MARK"
-        printf '## Invio messaggi su Telegram\n\n'
-        printf 'Non esiste un tool di invio messaggi richiamabile dal modello.\n'
-        printf 'Per inviare su Telegram usa il tool `terminal`:\n\n'
-        printf '    hermes send --to telegram "testo del messaggio"\n\n'
-        printf 'Il destinatario predefinito e` TELEGRAM_HOME_CHANNEL, gia`\n'
-        printf 'configurato: non chiedere il chat_id se non te lo danno.\n'
-        printf 'Per una chat diversa: `--to telegram:<chat_id>`.\n'
-        printf 'Per elencare i target disponibili: `hermes send --list telegram`.\n'
-        printf 'Non usare computer_use per Telegram: il container e` headless.\n'
-    } >> "$SOUL_FILE"
-    log "istruzioni Telegram aggiunte a SOUL.md"
+if [ -f "$SOUL_FILE" ] && [ -f /opt/migrate_soul.py ]; then
+    python3 /opt/migrate_soul.py "$SOUL_FILE" || log "WARN: SOUL.md migration skipped"
 fi
 
-# ---------------------------------------------------------------- Configurazione Hermes
-# Il volume può contenere un config.yaml scritto a mano in sessioni precedenti,
-# molto più povero di quello dell'installer (che ha ~25 sezioni di default).
-# Patcharlo così com'è lascerebbe Hermes senza quei default, quindi se il file
-# non è riconoscibile come generato dall'installer lo si rimpiazza col seed.
+# ---------------------------------------------------------------- Hermes Configuration
+# If an older hand-written config.yaml lacks installer sections, back it up and
+# seed from the full installer template before patching.
 if [ -f "$SEED_DIR/config.yaml" ] && [ -f "${HERMES_DIR}/config.yaml" ]; then
     if ! grep -q "^platform_toolsets:" "${HERMES_DIR}/config.yaml" 2>/dev/null; then
         cp -a "${HERMES_DIR}/config.yaml" \
             "${HERMES_DIR}/config.yaml.pre-v2.$(date +%s)"
         cp -a "$SEED_DIR/config.yaml" "${HERMES_DIR}/config.yaml"
-        log "config.yaml non-installer sostituito col default dell'immagine (backup .pre-v2)"
+        log "replaced non-installer config.yaml with image default (backup .pre-v2 saved)"
     fi
 fi
 
-# Patcha il config.yaml dell'installer (non lo sostituisce): imposta i provider
-# Snowflake Cortex e Ollama e il context_length per modello, che è ciò che evita
-# l'errore "Context length exceeded (20 tokens)".
 if [ -x "$VENV_PY" ] && [ -f /opt/hermes_configure.py ]; then
     if "$VENV_PY" /opt/hermes_configure.py \
         --provider "$ACTIVE_PROVIDER" --model "$DEFAULT_MODEL"; then
-        log "config Hermes applicato (provider=${ACTIVE_PROVIDER})"
+        log "Hermes configuration applied (provider=${ACTIVE_PROVIDER} model=${DEFAULT_MODEL})"
     else
-        log "WARN: configurazione Hermes fallita — config lasciato invariato"
+        log "WARN: Hermes configuration failed — leaving existing config unchanged"
     fi
-    # La cache del probe può contenere il context length errato rilevato prima
-    # del fix: va invalidata, verrà ripopolata correttamente.
     rm -f "${HERMES_DIR}/context_length_cache.yaml"
-    # Diagnostica: se resta una riga attiva Hermes stampa l'avviso di deprecazione
-    # ad ogni avvio. Il valore è un path, non un segreto.
     if grep -nE '^[[:space:]]*(export[[:space:]]+)?TERMINAL_CWD[[:space:]]*=' \
         "${HERMES_DIR}/.env" 2>/dev/null; then
-        log "WARN: TERMINAL_CWD ancora attivo in .env (riga sopra) — migrazione non applicata"
+        log "WARN: TERMINAL_CWD still active in .env — migration did not apply"
     fi
 else
-    log "WARN: venv o script di configurazione mancanti"
+    log "WARN: venv or hermes_configure.py missing"
 fi
 
-# ---------------------------------------------------------------- Proxy Cortex
-# Componente ESSENZIALE, non un accessorio: traduce max_tokens in
-# max_completion_tokens (Cortex rifiuta il primo con HTTP 400) e aggiunge
-# l'header OAUTH. Senza proxy, Hermes fallisce su tutti i modelli non-OpenAI.
+# ---------------------------------------------------------------- Embedded Cortex Proxy
 if [ -f /opt/cortex_proxy.py ]; then
     cp /opt/cortex_proxy.py "${HERMES_DIR}/cortex_proxy.py"
 fi
@@ -137,70 +113,52 @@ if [ -f "${HERMES_DIR}/cortex_proxy.py" ] && [ -f /snowflake/session/token ]; th
     start_proxy
     for _ in $(seq 1 20); do
         if proxy_up; then
-            log "proxy Cortex pronto su ${PROXY_BASE}"
+            log "embedded Cortex proxy ready on ${PROXY_BASE}"
             break
         fi
         sleep 1
     done
-    proxy_up || log "WARN: proxy non risponde — Hermes non funzionerà"
+    proxy_up || log "WARN: embedded proxy not responding"
 
-    # Watchdog: essendo sul percorso critico, un crash del proxy renderebbe
-    # Hermes inutilizzabile fino al riavvio del servizio.
     (
         while true; do
             sleep 30
             if ! proxy_up; then
-                log "WARN: proxy non risponde — riavvio"
+                log "WARN: embedded proxy down — restarting"
                 start_proxy
                 sleep 5
             fi
         done
     ) &
 else
-    log "WARN: proxy non avviabile (script o session token mancante)"
+    log "WARN: embedded proxy not started (script or SPCS session token missing)"
 fi
 
-# ---------------------------------------------------------------- Env
+# ---------------------------------------------------------------- Environment
 export OLLAMA_HOST="$OLLAMA_BASE"
-# Nessun OPENAI_BASE_URL/OPENAI_API_KEY: la configurazione dei provider vive nel
-# config.yaml. Impostarli qui creerebbe una seconda fonte di verità divergente.
 
 # ---------------------------------------------------------------- Cloudflare tunnel
 if [ -n "$CF_TUNNEL_TOKEN" ]; then
-    # SPCS blocca QUIC/UDP: http2 è obbligatorio.
     nohup cloudflared tunnel run --token "$CF_TUNNEL_TOKEN" --protocol http2 \
         > /tmp/cf_named.log 2>&1 &
-    log "Cloudflare tunnel avviato (http2)"
-    # L'IP interno cambia ad ogni restart e va aggiornato nella private CIDR
-    # route su Cloudflare: lo logghiamo per non doverlo cercare dal terminale.
-    log "IP interni del container: $(hostname -I 2>/dev/null || echo n/d)"
+    log "Cloudflare tunnel started (http2)"
+    log "container internal IPs: $(hostname -I 2>/dev/null || echo n/a)"
 else
-    log "CF_TUNNEL_TOKEN assente — tunnel non avviato"
+    log "CF_TUNNEL_TOKEN absent — tunnel not started"
 fi
 
-# ---------------------------------------------------------------- Gateway
-# Il gateway non e' un accessorio: e' l'unico processo che ascolta le
-# piattaforme di messaggistica ED e' il ticker che fa scattare i cronjob
-# ("Gateway is not running — jobs won't fire automatically"). Se non viene
-# avviato al boot, ogni ricreazione del container lascia l'agente muto e i
-# cron fermi, in modo silenzioso: nessun errore, solo assenza di risposte.
-# `hermes gateway install` vuole systemd, che in SPCS non c'e': va lanciato
-# come processo figlio.
+# ---------------------------------------------------------------- Gateway & Cron Ticker
 gateway_up() {
     pgrep -f "hermes gateway run" > /dev/null 2>&1
 }
 
 start_gateway() {
-    # --replace: se un'istanza precedente ha lasciato il lock, la sostituisce
-    # invece di uscire con errore.
     setsid nohup hermes gateway run --replace \
         >> "${HERMES_DIR}/logs/gateway.log" 2>&1 < /dev/null &
 }
 
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && command -v hermes > /dev/null 2>&1; then
     mkdir -p "${HERMES_DIR}/logs"
-    # Il gateway apre sessioni agente al primo messaggio: senza proxy pronto
-    # fallirebbe la prima inferenza, quindi lo si avvia dopo di lui.
     if proxy_up; then
         start_gateway
         for _ in $(seq 1 30); do
@@ -208,27 +166,26 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && command -v hermes > /dev/null 2>&1; then
             sleep 1
         done
         if gateway_up; then
-            log "gateway avviato (messaggistica + ticker cron)"
+            log "gateway started (messaging listener + cron ticker)"
         else
-            log "WARN: gateway non partito — nessuna risposta e cron fermi"
+            log "WARN: gateway failed to start"
         fi
 
-        # Watchdog, per lo stesso motivo del proxy: il guasto e' silenzioso.
         (
             while true; do
                 sleep 60
                 if ! gateway_up; then
-                    log "WARN: gateway non attivo — riavvio"
+                    log "WARN: gateway not running — restarting"
                     start_gateway
                     sleep 10
                 fi
             done
         ) &
     else
-        log "WARN: proxy non pronto — gateway non avviato"
+        log "WARN: proxy not ready — gateway not started"
     fi
 else
-    log "TELEGRAM_BOT_TOKEN assente — gateway non avviato"
+    log "TELEGRAM_BOT_TOKEN absent — gateway not started"
 fi
 
 # ---------------------------------------------------------------- .bashrc
@@ -239,25 +196,18 @@ cat >> /root/.bashrc << BEOF
 export PATH="/usr/local/bin:\$PATH:/root/.local/bin:${HERMES_DIR}/bin"
 export OLLAMA_HOST="${OLLAMA_BASE}"
 BEOF
-    log ".bashrc aggiornato"
+    log ".bashrc updated"
 fi
 
-# ---------------------------------------------------------------- Self-test
-# L'accesso interattivo è scomodo (SSH dipende da WARP, il web terminal corrompe
-# il paste), quindi il boot verifica da sé e lascia l'esito nei log del servizio,
-# leggibili con SYSTEM$GET_SERVICE_LOGS. Disattivabile con HERMES_SELFTEST=0.
+# ---------------------------------------------------------------- Boot Self-Test
 if [ "${HERMES_SELFTEST:-1}" = "1" ] && command -v hermes > /dev/null 2>&1; then
     (
-        # 1. L'helper credenziali: se non stampa JSON valido, key_cmd fallisce.
         if /opt/spcs_token.sh > /tmp/selftest_token.json 2>/dev/null; then
-            log "SELFTEST token helper: OK ($(wc -c < /tmp/selftest_token.json) byte)"
+            log "SELFTEST token helper: OK ($(wc -c < /tmp/selftest_token.json) bytes)"
         else
-            log "SELFTEST token helper: FALLITO"
+            log "SELFTEST token helper: FAILED"
         fi
 
-        # 2. Percorso diretto verso Cortex con gli stessi header che usa Hermes.
-        # Senza -f: con -f curl scarta il body sugli errori HTTP e si perde il
-        # messaggio di Snowflake, che è l'unica cosa utile per diagnosticare.
         HTTP_CODE="$(curl -sS -m 90 -o /tmp/selftest_direct.json -w '%{http_code}' \
             -X POST "https://${SNOWFLAKE_HOST}/api/v2/cortex/v1/chat/completions" \
             -H "Authorization: Bearer $(tr -d '\r\n' < /snowflake/session/token)" \
@@ -266,86 +216,53 @@ if [ "${HERMES_SELFTEST:-1}" = "1" ] && command -v hermes > /dev/null 2>&1; then
             -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"ping"}]}' \
             2>/tmp/selftest_direct.err || echo "curl-error")"
         if [ "$HTTP_CODE" = "200" ]; then
-            log "SELFTEST Cortex diretto: OK (HTTP 200)"
+            log "SELFTEST direct Cortex: OK (HTTP 200)"
         else
-            log "SELFTEST Cortex diretto: FALLITO (HTTP ${HTTP_CODE}) host=${SNOWFLAKE_HOST} body=$(tr -d '\n' < /tmp/selftest_direct.json | head -c 300) err=$(tr -d '\n' < /tmp/selftest_direct.err | head -c 150)"
+            log "SELFTEST direct Cortex: FAILED (HTTP ${HTTP_CODE}) host=${SNOWFLAKE_HOST} body=$(tr -d '\n' < /tmp/selftest_direct.json | head -c 300)"
         fi
 
-        # 2b. Il test che conta: stesso payload CON max_tokens attraverso il
-        # proxy. Diretto su Cortex questo darebbe HTTP 400; se qui torna 200 la
-        # traduzione in max_completion_tokens sta funzionando.
         PROXY_CODE="$(curl -sS -m 90 -o /tmp/selftest_proxy.json -w '%{http_code}' \
             -X POST "${PROXY_BASE}/chat/completions" \
             -H "Content-Type: application/json" \
             -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"ping"}],"max_tokens":64}' \
             2>/tmp/selftest_proxy.err || echo "curl-error")"
         if [ "$PROXY_CODE" = "200" ]; then
-            log "SELFTEST proxy con max_tokens: OK (HTTP 200 — traduzione attiva)"
+            log "SELFTEST embedded proxy with max_tokens: OK (HTTP 200)"
         else
-            log "SELFTEST proxy con max_tokens: FALLITO (HTTP ${PROXY_CODE}) body=$(tr -d '\n' < /tmp/selftest_proxy.json | head -c 300)"
+            log "SELFTEST embedded proxy with max_tokens: FAILED (HTTP ${PROXY_CODE}) body=$(tr -d '\n' < /tmp/selftest_proxy.json | head -c 300)"
         fi
 
-        # 2c. Tool calling su un modello reasoning: Cortex rifiuta 'tools' se
-        # reasoning_effort non è "none", e il proxy lo riscrive. Senza questo fix
-        # i modelli gpt-5.6-* sono inutilizzabili per un agente.
-        TOOLS_CODE="$(curl -sS -m 90 -o /tmp/selftest_tools.json -w '%{http_code}' \
-            -X POST "${PROXY_BASE}/chat/completions" \
-            -H "Content-Type: application/json" \
-            -d '{"model":"openai-gpt-5.6-terra","messages":[{"role":"user","content":"che ora e?"}],"reasoning_effort":"medium","tools":[{"type":"function","function":{"name":"get_time","description":"ora","parameters":{"type":"object","properties":{}}}}]}' \
-            2>/dev/null || echo "curl-error")"
-        if [ "$TOOLS_CODE" = "200" ]; then
-            log "SELFTEST tool calling su gpt-5.6: OK (HTTP 200 — reasoning_effort riscritto)"
-        else
-            log "SELFTEST tool calling su gpt-5.6: FALLITO (HTTP ${TOOLS_CODE}) body=$(tr -d '\n' < /tmp/selftest_tools.json | head -c 250)"
-        fi
-
-        # 3. Hermes end-to-end col config di default. Nota: '--provider' pretende
-        # anche '--model', altrimenti la CLI esce con un errore d'uso.
         run_hermes_test() {
             label="$1"; shift
-            timeout 240 hermes -z "Rispondi solo: pong" "$@" \
+            timeout 240 hermes -z "Reply with only: pong" "$@" \
                 > "/tmp/selftest_${label}.log" 2>&1 || true
             out="$(tr '\n' ' ' < "/tmp/selftest_${label}.log" | tail -c 250)"
             if grep -qiE "context length exceeded" "/tmp/selftest_${label}.log"; then
-                log "SELFTEST hermes[${label}]: FALLITO (Cortex ha rifiutato la richiesta) — ${out}"
+                log "SELFTEST hermes[${label}]: FAILED (context length exceeded) — ${out}"
             elif grep -qiE "requires --model|^usage:|unrecognized argument|HTTP [45][0-9][0-9]|Invalid OAuth|Traceback" "/tmp/selftest_${label}.log"; then
-                log "SELFTEST hermes[${label}]: FALLITO — ${out}"
+                log "SELFTEST hermes[${label}]: FAILED — ${out}"
             elif [ -s "/tmp/selftest_${label}.log" ]; then
                 log "SELFTEST hermes[${label}]: OK — ${out}"
             else
-                log "SELFTEST hermes[${label}]: FALLITO (nessun output)"
+                log "SELFTEST hermes[${label}]: FAILED (no output)"
             fi
         }
 
-        # Solo il percorso di default: è quello che l'utente userà davvero.
         run_hermes_test "default"
 
-        # 4. Prerequisiti di `hermes send --to telegram`. Questo guasto e'
-        # silenzioso: senza il modulo telegram il comando esce con 1 solo
-        # quando l'utente prova a inviare, e il venv sta fuori dal volume
-        # persistente, quindi un'installazione fatta a runtime sparisce alla
-        # prima ricreazione del container. Verificarlo al boot fa emergere la
-        # regressione nei log invece che durante l'uso.
         VENV_PY_TG=/usr/local/lib/hermes-agent/venv/bin/python
         if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            log "SELFTEST telegram: token assente — piattaforma non configurata"
+            log "SELFTEST telegram: token absent — platform not configured"
         elif ! "$VENV_PY_TG" -c "import telegram" > /dev/null 2>&1; then
-            log "SELFTEST telegram: FALLITO — modulo python-telegram-bot assente nel venv"
+            log "SELFTEST telegram: FAILED — python-telegram-bot missing in venv"
         else
             TG_VER="$("$VENV_PY_TG" -c "import telegram; print(telegram.__version__)" 2>/dev/null)"
-            log "SELFTEST telegram: OK (python-telegram-bot ${TG_VER}, chat ${TELEGRAM_HOME_CHANNEL:-non impostata})"
+            log "SELFTEST telegram: OK (python-telegram-bot ${TG_VER})"
         fi
     ) &
 fi
 
-# ------------------------------------------------- Tailscale + backend Desktop
-# Il Desktop si collega in modalita' "Remote gateway" a `hermes serve` sulla
-# 9119, raggiunta via tailnet. Nessuno dei due processi era avviato al boot,
-# quindi ogni ricreazione del container lasciava il client offline mentre il
-# servizio riportava READY.
-#
-# ttyd resta l'exec finale in foreground e NON va toccato: se Tailscale o
-# `hermes serve` si rompono, il web terminal e' l'unico canale di recupero.
+# ------------------------------------------------- Tailscale + Desktop Remote Gateway (:9119)
 TS_DIR=/root/tailscale
 TS_SOCK="${TS_DIR}/sock"
 TS_STATE="${TS_DIR}/tailscaled.state"
@@ -357,24 +274,16 @@ tailscaled_up() {
 }
 
 serve_up() {
-    # `hermes serve --status` e' inaffidabile: riporta "No hermes dashboard
-    # processes running" mentre il processo e' in ascolto. Si interroga la porta.
     curl -fsS -o /dev/null -m 5 "${SERVE_BASE}/api/status" 2>/dev/null
 }
 
 start_tailscaled() {
-    # SPCS non espone /dev/net/tun e non concede NET_ADMIN: userspace networking
-    # e' obbligatorio, non una preferenza.
     nohup tailscaled --tun=userspace-networking \
         --state="$TS_STATE" --socket="$TS_SOCK" \
         >> /tmp/tailscaled.log 2>&1 &
 }
 
 start_serve() {
-    # --skip-build e' OBBLIGATORIO: senza, il processo resta vivo ma non si mette
-    # mai in ascolto e serve.log resta vuoto, perche' tenta la build della web UI
-    # che nell'immagine non esiste. Il bind su 0.0.0.0 attiva da solo il gate di
-    # autenticazione.
     nohup hermes serve --skip-build --host 0.0.0.0 --port "$SERVE_PORT" \
         >> /root/serve.log 2>&1 &
 }
@@ -388,28 +297,22 @@ if command -v tailscaled > /dev/null 2>&1; then
     done
 
     if tailscaled_up; then
-        # Con lo stato sul volume il nodo si riaggancia senza authkey e conserva
-        # lo stesso IP: la key serve solo al primo avvio, o se lo stato si perde.
-        # --accept-dns=false e' deliberato: il resolver del container non va
-        # riscritto, deve continuare a risolvere gli host interni SPCS.
         if [ -s "$TS_STATE" ]; then
             tailscale --socket="$TS_SOCK" up \
                 --hostname hermes-spcs --accept-dns=false \
                 >> /tmp/tailscaled.log 2>&1 || \
-                log "WARN: tailscale up fallito con lo stato esistente"
+                log "WARN: tailscale up failed with existing state"
         elif [ -n "${TS_AUTHKEY:-}" ]; then
             tailscale --socket="$TS_SOCK" up --authkey "$TS_AUTHKEY" \
                 --hostname hermes-spcs --accept-dns=false \
                 >> /tmp/tailscaled.log 2>&1 || \
-                log "WARN: tailscale up fallito con l'authkey"
+                log "WARN: tailscale up failed with authkey"
         else
-            log "WARN: nessuno stato Tailscale e TS_AUTHKEY assente — nodo non registrato"
+            log "WARN: no Tailscale state and TS_AUTHKEY absent — node not registered"
         fi
 
         TS_IP="$(tailscale --socket="$TS_SOCK" ip -4 2>/dev/null | head -1)"
-        # L'IP va loggato: i log della readinessProbe lo rendono irrecuperabile
-        # dopo circa mezz'ora, e serve per configurare i client.
-        log "tailnet IP: ${TS_IP:-non assegnato}"
+        log "tailnet IP: ${TS_IP:-unassigned}"
 
         if [ -n "$TS_IP" ]; then
             start_serve
@@ -418,37 +321,35 @@ if command -v tailscaled > /dev/null 2>&1; then
                 sleep 1
             done
             if serve_up; then
-                log "hermes serve pronto su ${TS_IP}:${SERVE_PORT} (Remote gateway del Desktop)"
+                log "hermes serve ready on ${TS_IP}:${SERVE_PORT} (Desktop Remote gateway)"
                 tailscale --socket="$TS_SOCK" serve --bg --tcp "$SERVE_PORT" \
                     "tcp://localhost:${SERVE_PORT}" >> /tmp/tailscaled.log 2>&1 || \
-                    log "WARN: tailscale serve non configurato"
+                    log "WARN: tailscale serve not configured"
             else
-                log "WARN: hermes serve non risponde — serve.log: $(tail -c 200 /root/serve.log 2>/dev/null | tr '\n' ' ')"
+                log "WARN: hermes serve not responding — serve.log: $(tail -c 200 /root/serve.log 2>/dev/null | tr '\n' ' ')"
             fi
 
-            # Watchdog: come per il proxy e il gateway, il guasto e' silenzioso —
-            # il Desktop si limita a non collegarsi piu'.
             (
                 while true; do
                     sleep 60
                     tailscaled_up || start_tailscaled
                     if ! serve_up; then
-                        log "WARN: hermes serve non risponde — riavvio"
+                        log "WARN: hermes serve not responding — restarting"
                         start_serve
                         sleep 10
                     fi
                 done
             ) &
         else
-            log "WARN: nessun IP tailnet — hermes serve non avviato"
+            log "WARN: no tailnet IP — hermes serve not started"
         fi
     else
-        log "WARN: tailscaled non partito — Remote gateway non disponibile"
+        log "WARN: tailscaled did not start — Remote gateway unavailable"
     fi
 else
-    log "tailscaled assente dall'immagine — Remote gateway non disponibile"
+    log "tailscaled missing in image — Remote gateway unavailable"
 fi
 
-log "pronto — provider=${ACTIVE_PROVIDER} model=${DEFAULT_MODEL}; web terminal su :7681"
+log "ready — provider=${ACTIVE_PROVIDER} model=${DEFAULT_MODEL}; web terminal on :7681"
 
 exec ttyd --port 7681 --writable bash -l

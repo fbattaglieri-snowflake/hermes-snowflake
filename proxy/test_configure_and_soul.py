@@ -1,4 +1,5 @@
-"""Offline unit tests for hermes_configure.py and migrate_soul.py."""
+"""Unit tests for hermes_configure.py (Standard + AI Gateway + Fallback) and migrate_soul.py."""
+
 import importlib.util
 from pathlib import Path
 
@@ -15,7 +16,9 @@ def _load_module(name: str, rel_path: str):
     return mod
 
 
-def test_hermes_configure_standard_providers():
+def test_hermes_configure_standard_providers(monkeypatch):
+    monkeypatch.delenv("STANDARD_PROXY_ORIGIN", raising=False)
+    monkeypatch.delenv("AIGATEWAY_PROXY_ORIGIN", raising=False)
     cfg_mod = _load_module("hermes_configure", "docker/hermes/hermes_configure.py")
     providers = cfg_mod.build_providers(dict)
     assert set(providers.keys()) == {
@@ -28,6 +31,7 @@ def test_hermes_configure_standard_providers():
     assert resp["api_mode"] == "codex_responses"
     assert resp["discover_models"] is True
     assert resp["context_length"] == 1050000
+    assert resp["api_key"] == "internal-spcs"
     assert resp["base_url"].endswith("/responses/v1")
 
     chat = providers["snowflake-standard-chat"]
@@ -41,7 +45,53 @@ def test_hermes_configure_standard_providers():
     assert msgs["base_url"].endswith("/messages")
 
 
-def test_hermes_configure_legacy_fallback_when_selected():
+def test_hermes_configure_aigateway_only_when_selected():
+    cfg_mod = _load_module("hermes_configure_aigw", "docker/hermes/hermes_configure.py")
+    providers = cfg_mod.build_providers(
+        dict,
+        selected_provider="snowflake-aigateway-messages",
+        standard_origin="",
+        aigateway_origin="http://llm-proxy-aigateway.core.svc.spcs.internal:8080",
+    )
+    assert set(providers.keys()) == {
+        "snowflake-aigateway-messages",
+        "snowflake-aigateway-responses",
+        "snowflake-aigateway-chat",
+        "ollama-spcs",
+    }
+    gw_msgs = providers["snowflake-aigateway-messages"]
+    assert gw_msgs["api_mode"] == "anthropic_messages"
+    assert gw_msgs["api_key"] == "client:hermes-spcs"
+    assert gw_msgs["discover_models"] is True
+    assert gw_msgs["base_url"] == "http://llm-proxy-aigateway.core.svc.spcs.internal:8080/messages"
+
+    gw_resp = providers["snowflake-aigateway-responses"]
+    assert gw_resp["context_length"] == 1050000
+    assert gw_resp["api_key"] == "client:hermes-spcs"
+
+
+def test_hermes_configure_dual_proxy_cohosted():
+    cfg_mod = _load_module("hermes_configure_dual", "docker/hermes/hermes_configure.py")
+    providers = cfg_mod.build_providers(
+        dict,
+        selected_provider="snowflake-aigateway-messages",
+        standard_origin="http://llm-proxy-standard.core.svc.spcs.internal:8080",
+        aigateway_origin="http://llm-proxy-aigateway.core.svc.spcs.internal:8080",
+    )
+    assert set(providers.keys()) == {
+        "snowflake-aigateway-messages",
+        "snowflake-aigateway-responses",
+        "snowflake-aigateway-chat",
+        "snowflake-standard-responses",
+        "snowflake-standard-chat",
+        "snowflake-standard-messages",
+        "ollama-spcs",
+    }
+
+
+def test_hermes_configure_legacy_fallback_when_selected(monkeypatch):
+    monkeypatch.delenv("STANDARD_PROXY_ORIGIN", raising=False)
+    monkeypatch.delenv("AIGATEWAY_PROXY_ORIGIN", raising=False)
     cfg_mod = _load_module("hermes_configure_legacy", "docker/hermes/hermes_configure.py")
     providers = cfg_mod.build_providers(dict, selected_provider="snowflake-cortex-proxy")
     assert "snowflake-cortex-proxy" in providers

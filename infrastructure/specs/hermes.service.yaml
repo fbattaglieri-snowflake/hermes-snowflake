@@ -10,6 +10,7 @@ spec:
         HERMES_PROVIDER: "{{ hermes_provider }}"
         HERMES_MODEL: "{{ hermes_model }}"
         STANDARD_PROXY_ORIGIN: "{{ standard_proxy_origin }}"
+        AIGATEWAY_PROXY_ORIGIN: "{{ aigateway_proxy_origin }}"
         HERMES_SELFTEST: "1"
       resources:
         requests:

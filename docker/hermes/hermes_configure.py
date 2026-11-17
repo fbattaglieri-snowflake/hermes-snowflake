@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Configure Hermes Agent for Snowflake Cortex inside Snowpark Container Services (SPCS).
 
+Supports all three Snowflake Cortex upstream topologies:
+  - Option A (Cortex REST API Proxy): snowflake-proxy-cortexrestapi via STANDARD_PROXY_ORIGIN
+  - Option B (Cortex AI Gateway Proxy): snowflake-proxy-cortex-aigateway via AIGATEWAY_PROXY_ORIGIN
+  - Option C (Embedded Fallback): in-container proxy/cortex_proxy.py on 127.0.0.1:8080
+
 Why patch instead of replacing: the upstream Hermes installer generates a ~99KB
 `config.yaml` with 23+ documented sections (`compression`, `prompt_caching`, `agent`,
 `platform_toolsets`, etc.). Replacing it with a minimal file would discard those
@@ -22,17 +27,15 @@ import time
 CONFIG_PATH = "/root/.hermes/config.yaml"
 MODELS_PATH = os.environ.get("CORTEX_MODELS_PATH", "/opt/cortex_models.json")
 MARKER_KEY = "x_spcs_config_version"
-MARKER_VALUE = "v10"
+MARKER_VALUE = "v11"
 
 SNOWFLAKE_HOST = os.environ.get(
     "SNOWFLAKE_HOST", "localhost"  # overridden by SNOWFLAKE_HOST injected by SPCS
 )
 CORTEX_URL = "https://%s/api/v2/cortex/v1" % SNOWFLAKE_HOST
 PROXY_URL = "http://127.0.0.1:8080/v1"
-STANDARD_PROXY_ORIGIN = os.environ.get(
-    "STANDARD_PROXY_ORIGIN",
-    "http://llm-proxy-standard.core.svc.spcs.internal:8080",
-).rstrip("/")
+DEFAULT_STANDARD_ORIGIN = "http://llm-proxy-standard.core.svc.spcs.internal:8080"
+DEFAULT_AIGATEWAY_ORIGIN = "http://llm-proxy-aigateway.core.svc.spcs.internal:8080"
 OLLAMA_URL = os.environ.get(
     "OLLAMA_HOST", "http://ollama-service:11434"
 ).rstrip("/") + "/v1"
@@ -43,9 +46,25 @@ OLLAMA_MODELS = {"muse-glimmer:30b": 128000}
 PROVIDER_STANDARD_CHAT = "snowflake-standard-chat"
 PROVIDER_STANDARD_RESPONSES = "snowflake-standard-responses"
 PROVIDER_STANDARD_MESSAGES = "snowflake-standard-messages"
+
+PROVIDER_AIGATEWAY_CHAT = "snowflake-aigateway-chat"
+PROVIDER_AIGATEWAY_RESPONSES = "snowflake-aigateway-responses"
+PROVIDER_AIGATEWAY_MESSAGES = "snowflake-aigateway-messages"
+
 PROVIDER_OLLAMA = "ollama-spcs"
 PROVIDER_LEGACY_PROXY = "snowflake-cortex-proxy"
 PROVIDER_DIRECT_CORTEX = "snowflake-cortex"
+
+STANDARD_PROVIDERS = {
+    PROVIDER_STANDARD_CHAT,
+    PROVIDER_STANDARD_RESPONSES,
+    PROVIDER_STANDARD_MESSAGES,
+}
+AIGATEWAY_PROVIDERS = {
+    PROVIDER_AIGATEWAY_CHAT,
+    PROVIDER_AIGATEWAY_RESPONSES,
+    PROVIDER_AIGATEWAY_MESSAGES,
+}
 
 
 def load_fallback_models():
@@ -70,48 +89,108 @@ def build_models(mapping, ruamel_map):
     return out
 
 
-def build_providers(ruamel_map, selected_provider=PROVIDER_STANDARD_RESPONSES):
+def _register_multi_api_suite(providers, ruamel_map, prefix_specs, origin, api_key):
+    for slug, display, suffix, mode, default_model, ctx_len in prefix_specs:
+        entry = ruamel_map()
+        entry["name"] = display
+        entry["base_url"] = origin + suffix
+        entry["api_mode"] = mode
+        entry["api_key"] = api_key
+        entry["model"] = default_model
+        if ctx_len is not None:
+            entry["context_length"] = ctx_len
+        entry["discover_models"] = True
+        providers[slug] = entry
+
+
+def build_providers(
+    ruamel_map,
+    selected_provider=PROVIDER_STANDARD_RESPONSES,
+    standard_origin=None,
+    aigateway_origin=None,
+):
     providers = ruamel_map()
 
-    # Shared multi-API Standard Proxy (snowflake-proxy-cortexrestapi) providers
-    # with dynamic catalog discovery (discover_models: True) across all 3 APIs:
-    standard_specs = (
-        (
-            PROVIDER_STANDARD_RESPONSES,
-            "Snowflake-Standard-Responses",
-            "/responses/v1",
-            "codex_responses",
-            "openai-gpt-6-astra",
-            1050000,
-        ),
-        (
-            PROVIDER_STANDARD_CHAT,
-            "Snowflake-Standard-Chat",
-            "/chat/v1",
-            "chat_completions",
-            "openai-gpt-6-luna",
-            None,
-        ),
-        (
-            PROVIDER_STANDARD_MESSAGES,
-            "Snowflake-Standard-Messages",
-            "/messages",
-            "anthropic_messages",
-            "claude-opus-5-5",
-            None,
-        ),
+    raw_std = (
+        standard_origin
+        if standard_origin is not None
+        else os.environ.get("STANDARD_PROXY_ORIGIN", "")
+    ).strip().rstrip("/")
+    raw_aigw = (
+        aigateway_origin
+        if aigateway_origin is not None
+        else os.environ.get("AIGATEWAY_PROXY_ORIGIN", "")
+    ).strip().rstrip("/")
+
+    enable_aigw = bool(raw_aigw) or selected_provider in AIGATEWAY_PROVIDERS
+    fallback_choices = {PROVIDER_LEGACY_PROXY, PROVIDER_DIRECT_CORTEX}
+    enable_std = (
+        bool(raw_std)
+        or selected_provider in STANDARD_PROVIDERS
+        or (not enable_aigw and selected_provider not in fallback_choices)
     )
-    for slug, display, suffix, mode, default_model, ctx_len in standard_specs:
-        std = ruamel_map()
-        std["name"] = display
-        std["base_url"] = STANDARD_PROXY_ORIGIN + suffix
-        std["api_mode"] = mode
-        std["api_key"] = "internal-spcs"
-        std["model"] = default_model
-        if ctx_len is not None:
-            std["context_length"] = ctx_len
-        std["discover_models"] = True
-        providers[slug] = std
+
+    if enable_aigw:
+        eff_aigw = raw_aigw or DEFAULT_AIGATEWAY_ORIGIN
+        aigw_specs = (
+            (
+                PROVIDER_AIGATEWAY_MESSAGES,
+                "Snowflake-AIGateway-Messages",
+                "/messages",
+                "anthropic_messages",
+                "claude-opus-5-5",
+                None,
+            ),
+            (
+                PROVIDER_AIGATEWAY_RESPONSES,
+                "Snowflake-AIGateway-Responses",
+                "/responses/v1",
+                "codex_responses",
+                "openai-gpt-6-astra",
+                1050000,
+            ),
+            (
+                PROVIDER_AIGATEWAY_CHAT,
+                "Snowflake-AIGateway-Chat",
+                "/chat/v1",
+                "chat_completions",
+                "openai-gpt-6-luna",
+                None,
+            ),
+        )
+        # client:hermes-spcs automatically populates snow-agent-name and W3C baggage
+        # (gen_ai.agent.id / gen_ai.agent.name) in AGENT_TRACE_TABLE('SNOWFLAKE').
+        _register_multi_api_suite(providers, ruamel_map, aigw_specs, eff_aigw, "client:hermes-spcs")
+
+    if enable_std:
+        eff_std = raw_std or DEFAULT_STANDARD_ORIGIN
+        standard_specs = (
+            (
+                PROVIDER_STANDARD_RESPONSES,
+                "Snowflake-Standard-Responses",
+                "/responses/v1",
+                "codex_responses",
+                "openai-gpt-6-astra",
+                1050000,
+            ),
+            (
+                PROVIDER_STANDARD_CHAT,
+                "Snowflake-Standard-Chat",
+                "/chat/v1",
+                "chat_completions",
+                "openai-gpt-6-luna",
+                None,
+            ),
+            (
+                PROVIDER_STANDARD_MESSAGES,
+                "Snowflake-Standard-Messages",
+                "/messages",
+                "anthropic_messages",
+                "claude-opus-5-5",
+                None,
+            ),
+        )
+        _register_multi_api_suite(providers, ruamel_map, standard_specs, eff_std, "internal-spcs")
 
     ollama = ruamel_map()
     ollama["name"] = "Ollama SPCS (GPU pool)"
@@ -119,14 +198,10 @@ def build_providers(ruamel_map, selected_provider=PROVIDER_STANDARD_RESPONSES):
     ollama["api_mode"] = "chat_completions"
     ollama["api_key"] = "ollama"
     ollama["context_length"] = 128000
-    # GPU cold starts can take up to several minutes on first load.
     ollama["request_timeout_seconds"] = 600
     ollama["models"] = build_models(OLLAMA_MODELS, ruamel_map)
     providers[PROVIDER_OLLAMA] = ollama
 
-    # Optional single-container embedded fallback providers (registered only when
-    # explicitly selected so the default Model Picker stays clean with the 3
-    # Snowflake-Standard-* providers + Ollama).
     if selected_provider == PROVIDER_LEGACY_PROXY:
         fallback_models = load_fallback_models()
         legacy = ruamel_map()
@@ -223,6 +298,9 @@ def main():
             PROVIDER_STANDARD_CHAT,
             PROVIDER_STANDARD_RESPONSES,
             PROVIDER_STANDARD_MESSAGES,
+            PROVIDER_AIGATEWAY_CHAT,
+            PROVIDER_AIGATEWAY_RESPONSES,
+            PROVIDER_AIGATEWAY_MESSAGES,
             PROVIDER_OLLAMA,
             PROVIDER_LEGACY_PROXY,
             PROVIDER_DIRECT_CORTEX,
@@ -294,6 +372,7 @@ def main():
 
     model["provider"] = args.provider
     model["default"] = args.model
+    model["api_mode"] = active["api_mode"]
     model["base_url"] = active["base_url"]
     model.pop("context_length", None)
 

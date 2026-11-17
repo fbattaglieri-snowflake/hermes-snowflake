@@ -17,9 +17,13 @@ Poi puntare il client a http://127.0.0.1:8080/v1
 """
 import json
 import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.request
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SNOWFLAKE_HOST = os.environ.get(
@@ -28,6 +32,53 @@ SNOWFLAKE_HOST = os.environ.get(
 CORTEX_BASE = "https://%s/api/v2/cortex/v1" % SNOWFLAKE_HOST
 SQL_API_PATH = "/api/v2/statements"
 TOKEN_PATH = "/snowflake/session/token"  # noqa: S105
+RETRYABLE_STATUS_CODES = {429, 503, 529}
+RETRY_DELAYS = (3.0, 7.0, 15.0, 30.0, 45.0)
+_DURATION_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h)")
+
+
+def parse_retry_after_seconds(headers):
+    """Extract a positive retry wait in seconds from upstream rate-limit headers."""
+    if not headers:
+        return None
+    now_epoch = time.time()
+    for name in (
+        "Retry-After",
+        "retry-after",
+        "x-ratelimit-reset-tokens",
+        "x-ratelimit-reset-requests",
+        "anthropic-ratelimit-input-tokens-reset",
+        "anthropic-ratelimit-tokens-reset",
+    ):
+        raw = (headers.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+            continue
+        except ValueError:
+            pass
+        parts = _DURATION_TOKEN_RE.findall(raw.lower())
+        if parts and "".join(num + u for num, u in parts) == raw.lower().replace(" ", ""):
+            mult = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+            total = sum(float(num) * mult[u] for num, u in parts)
+            if total > 0:
+                return total
+            continue
+        for parse_fn in (
+            lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(),
+            lambda s: parsedate_to_datetime(s).timestamp(),
+        ):
+            try:
+                delta = parse_fn(raw) - now_epoch
+                if delta > 0:
+                    return delta
+                break
+            except Exception:
+                pass
+    return None
 
 # Bind configurabile: 127.0.0.1 dentro il container di Hermes (il client e' locale),
 # 0.0.0.0 quando il proxy gira come servizio SPCS a se' stante e deve essere
@@ -431,12 +482,37 @@ class CortexProxy(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # silenzia access log
         pass
 
-    def _send_body(self, status, body, content_type="application/json"):
+    def _send_body(self, status, body, content_type="application/json", extra_headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _upstream_with_retry(self, payload):
+        """Send POST to Cortex with bounded exponential backoff on HTTP 429/503/529."""
+        delays = tuple(RETRY_DELAYS)
+        for attempt_idx in range(len(delays) + 1):
+            try:
+                return self._upstream(payload)
+            except urllib.error.HTTPError as err:
+                if err.code not in RETRYABLE_STATUS_CODES or attempt_idx >= len(delays):
+                    raise
+                hinted = parse_retry_after_seconds(err.headers)
+                try:
+                    err.close()
+                except Exception:
+                    pass
+                base_delay = delays[attempt_idx]
+                delay = (
+                    min(90.0, hinted if attempt_idx == 0 else max(base_delay, hinted))
+                    if hinted is not None
+                    else base_delay
+                )
+                time.sleep(delay)
 
     def _upstream(self, payload):
         request = urllib.request.Request(  # noqa: S310
@@ -511,10 +587,16 @@ class CortexProxy(BaseHTTPRequestHandler):
         payload, body = adapt_payload(raw)
 
         try:
-            response = self._upstream(payload)
+            response = self._upstream_with_retry(payload)
         except urllib.error.HTTPError as err:
             err_body = err.read()
             text = err_body.decode("utf-8", "replace")
+            hint = parse_retry_after_seconds(err.headers)
+            err_extra = (
+                {"Retry-After": str(max(1, min(600, int(round(hint or 15.0)))))}
+                if err.code in RETRYABLE_STATUS_CODES
+                else None
+            )
 
             # Retry adattivo: alcuni modelli reasoning rifiutano 'tools' se
             # reasoning_effort non e' esplicitamente "none". La lista in
@@ -533,7 +615,7 @@ class CortexProxy(BaseHTTPRequestHandler):
                 )
                 sys.stderr.flush()
                 try:
-                    response = self._upstream(force_no_reasoning(body))
+                    response = self._upstream_with_retry(force_no_reasoning(body))
                 except urllib.error.HTTPError as err2:
                     body2 = err2.read()
                     sys.stderr.write(
@@ -555,7 +637,7 @@ class CortexProxy(BaseHTTPRequestHandler):
                     "upstream HTTP %s su %s: %s\n" % (err.code, self.path, text[:500])
                 )
                 sys.stderr.flush()
-                self._send_body(err.code, err_body)
+                self._send_body(err.code, err_body, extra_headers=err_extra)
                 return
         except Exception as err:  # rete, DNS, TLS
             self._send_body(

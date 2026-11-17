@@ -18,25 +18,31 @@ Configure these variables in your GitHub repository under **Settings $\rightarro
 | `HERMES_INSTANCE_FAMILY` | `CPU_X64_M` | Compute pool instance family (check `CREATE COMPUTE POOL` docs for your cloud). |
 | `HERMES_IMAGE_REPOSITORY` | `HERMES_IMAGES` | SPCS image repository name. |
 | `HERMES_EGRESS_EAI` | `HERMES_EGRESS_EAI` | External Access Integration name for outbound HTTPS/DERP traffic. |
-| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.core.svc.spcs.internal:8080` | Internal SPCS DNS origin for [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi). |
-| `HERMES_PROVIDER` | `snowflake-standard-responses` | Default provider slug (`snowflake-standard-responses`, `snowflake-standard-chat`, `snowflake-standard-messages`, `ollama-spcs`, or `snowflake-cortex-proxy`). |
-| `HERMES_MODEL` | `openai-gpt-6-astra` | Default model ID set in `config.yaml` (`model.default`). |
+| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.core.svc.spcs.internal:8080` | **Option A:** Internal SPCS DNS origin for [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) (leave empty if deploying Option B only). |
+| `AIGATEWAY_PROXY_ORIGIN` | `http://llm-proxy-aigateway.core.svc.spcs.internal:8080` | **Option B:** Internal SPCS DNS origin for [**`snowflake-proxy-cortex-aigateway`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortex-aigateway) (leave empty if deploying Option A only; set both to co-host Option A + Option B). |
+| `HERMES_PROVIDER` | `snowflake-aigateway-messages` | Default provider slug (`snowflake-aigateway-{messages,responses,chat}`, `snowflake-standard-{responses,chat,messages}`, `ollama-spcs`, or `snowflake-cortex-proxy`). |
+| `HERMES_MODEL` | `claude-opus-5-5` | Default model ID set in `config.yaml` (`model.default`). |
 | `ENABLE_BACKUP` | `true` / `false` | Optional toggle for scheduled runs of `backup.yml`. |
+
+> [!TIP]
+> **Smart Provider Registration (`hermes_configure.py`):**
+> - Set **only `AIGATEWAY_PROXY_ORIGIN`** (`HERMES_PROVIDER=snowflake-aigateway-messages`) $\rightarrow$ registers the 3 `Snowflake-AIGateway-*` providers (`api_key: "client:hermes-spcs"`) + `ollama-spcs`.
+> - Set **only `STANDARD_PROXY_ORIGIN`** (`HERMES_PROVIDER=snowflake-standard-responses`) $\rightarrow$ registers the 3 `Snowflake-Standard-*` providers + `ollama-spcs`.
+> - Set **both `AIGATEWAY_PROXY_ORIGIN` and `STANDARD_PROXY_ORIGIN`** $\rightarrow$ registers all 6 providers in the `/model` picker so you can switch seamlessly between Cortex AI Gateway and direct Cortex REST API.
 
 ---
 
 ## 2. Hermes Upstream Revision Pin (`HERMES_GIT_SHA`)
 
-The upstream Hermes installer supports pinning an exact commit via `--commit`. `docker/hermes/Dockerfile` pins this revision explicitly:
+`docker/hermes/Dockerfile` pins an exact upstream Hermes Agent commit via `--commit`:
 
 ```dockerfile
 ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 ARG HERMES_GIT_SHA=4d04303818b61bf3aa09278af48356315515965b
 ```
 
-Why this matters:
-- **Reproducible Builds:** Two builds of the same commit in this repository always produce the exact same Hermes Agent revision and Python environment (`/opt/hermes/installs`).
-- **Outside `/root` Block Volume:** By installing into `/opt/hermes/hermes-agent` and `/opt/hermes/installs` and symlinking `/root/.hermes/installs` at boot, the runtime code is never masked by the `/root` block volume and automatically updates whenever you deploy a new image.
+- **Reproducible Builds:** Two builds of the same commit always produce the exact same Hermes Agent revision and Python environment (`/opt/hermes/installs`).
+- **Outside `/root` Block Volume:** Installing into `/opt/hermes` and symlinking `/root/.hermes/installs` at boot ensures runtime code is never masked by `/root` and updates cleanly on `ALTER SERVICE`.
 
 To upgrade Hermes Agent to a newer upstream commit:
 
@@ -50,9 +56,10 @@ docker build --platform linux/amd64 --build-arg HERMES_GIT_SHA=<new-commit-sha> 
 
 | Variable | Default / Example | Purpose |
 |---|---|---|
-| `HERMES_PROVIDER` | `snowflake-standard-responses` | Active provider slug written into `/root/.hermes/config.yaml`. |
-| `HERMES_MODEL` | `openai-gpt-6-astra` | Default model written into `model.default`. Keeping this declarative prevents cronjob inference-config drift across restarts. |
-| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.core.svc.spcs.internal:8080` | Base URL of the shared [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) service. |
+| `HERMES_PROVIDER` | `snowflake-aigateway-messages` / `snowflake-standard-responses` | Active provider slug written into `/root/.hermes/config.yaml`. |
+| `HERMES_MODEL` | `claude-opus-5-5` / `openai-gpt-6-astra` | Default model written into `model.default`. Keeping this declarative prevents cronjob spend-guard drift across restarts. |
+| `STANDARD_PROXY_ORIGIN` | `http://llm-proxy-standard.core.svc.spcs.internal:8080` | Base URL of [**`snowflake-proxy-cortexrestapi`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortexrestapi) (Option A). |
+| `AIGATEWAY_PROXY_ORIGIN` | `http://llm-proxy-aigateway.core.svc.spcs.internal:8080` | Base URL of [**`snowflake-proxy-cortex-aigateway`**](https://github.com/fbattaglieri-snowflake/snowflake-proxy-cortex-aigateway) (Option B). |
 | `HERMES_SELFTEST` | `1` | Runs non-destructive boot self-tests and logs results to `SYSTEM$GET_SERVICE_LOGS`. Set to `0` to skip. |
 | `TELEGRAM_ALLOWED_USERS` | `123456789` | Optional comma-separated **numeric** Telegram user IDs (do not use `@username`). |
 
@@ -60,7 +67,7 @@ docker build --platform linux/amd64 --build-arg HERMES_GIT_SHA=<new-commit-sha> 
 
 ## 4. Snowflake Secrets (Created by `10_bootstrap.sql`)
 
-GitHub Actions uses **passwordless OIDC Workload Identity Federation** — no long-lived Snowflake credentials are stored in GitHub. Runtime secrets are stored as **Snowflake Secrets** in your deployment schema and injected into the container by `infrastructure/specs/hermes.service.yaml`:
+GitHub Actions uses **passwordless OIDC Workload Identity Federation** — no long-lived Snowflake credentials are stored in GitHub. Runtime secrets live as **Snowflake Secrets** in your deployment schema and are injected by `infrastructure/specs/hermes.service.yaml`:
 
 | Snowflake Secret Name | Injected Container Env Var | Required? | Purpose |
 |---|---|---|---|
@@ -75,8 +82,6 @@ GitHub Actions uses **passwordless OIDC Workload Identity Federation** — no lo
 
 ### Generating `HERMES_DASH_PASSWORD_HASH`
 
-Run inside the container (via the web terminal on `:7681`) or any environment with the Hermes virtualenv:
-
 ```bash
 /usr/local/lib/hermes-agent/venv/bin/python -c "
 import sys
@@ -88,9 +93,4 @@ print(hash_password('your-strong-password'))
 
 ### Creating the Tailscale Auth Key (`TS_AUTHKEY`)
 
-Generate a key at `https://login.tailscale.com/admin/settings/keys` with:
-- **Reusable:** `Yes`
-- **Ephemeral:** `No` (ephemeral nodes are deleted on disconnect and lose their IP)
-- **Tag:** `tag:hermes-spcs` (recommended so node keys do not expire)
-
-`start.sh` uses `TS_AUTHKEY` **only on first boot** when `/root/tailscale/tailscaled.state` does not exist yet. On all subsequent boots, `tailscaled` re-authenticates from the persisted state file on the block volume and keeps the **exact same `100.x.y.z` tailnet IP**.
+Generate a key at `https://login.tailscale.com/admin/settings/keys` with **Reusable: Yes**, **Ephemeral: No**, and **Tag: `tag:hermes-spcs`** (recommended so node keys do not expire). `start.sh` uses `TS_AUTHKEY` only on first boot before `/root/tailscale/tailscaled.state` exists.

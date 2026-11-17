@@ -135,3 +135,36 @@ def test_adapt_payload_collapses_parallel_tool_calls(tmp_path, monkeypatch):
     assert body is not None
     assert len(body["messages"]) == 3
     assert len(body["messages"][1]["tool_calls"]) == 1
+
+
+def test_parse_retry_after_seconds():
+    assert MODULE.parse_retry_after_seconds({}) is None
+    assert MODULE.parse_retry_after_seconds({"Retry-After": "0"}) is None
+    assert MODULE.parse_retry_after_seconds({"Retry-After": "12.5"}) == 12.5
+    assert MODULE.parse_retry_after_seconds({"x-ratelimit-reset-tokens": "1m5s"}) == 65.0
+
+
+def test_upstream_with_retry_recovers_from_transient_429(monkeypatch):
+    import io
+    import urllib.error
+
+    monkeypatch.setattr(MODULE, "RETRY_DELAYS", (0.001, 0.002))
+    attempts = []
+
+    class DummyHandler:
+        def _upstream(self, payload):
+            attempts.append(payload)
+            if len(attempts) == 1:
+                raise urllib.error.HTTPError(
+                    url="https://example.invalid/chat/completions",
+                    code=429,
+                    msg="Too Many Requests",
+                    hdrs={"Retry-After": "0.001"},
+                    fp=io.BytesIO(b'{"message":"Too Many Requests"}'),
+                )
+            return "OK_RESPONSE"
+
+    res = MODULE.CortexProxy._upstream_with_retry(DummyHandler(), b"{}")
+    assert res == "OK_RESPONSE"
+    assert len(attempts) == 2
+

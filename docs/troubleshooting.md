@@ -76,6 +76,11 @@ When using `openai-gpt-6-astra` or `openai-gpt-6.1-sol` (`context_length: 105000
 - Ensure the proxy sets `PROXY_DEADLINE=600` (600 seconds) and `auxiliary_client.py` passes `reasoning={"effort": "low", "summary": "auto"}` on Responses auxiliary calls (`compression`, `title_generation`, `approval`) so context-compression summaries complete quickly without hitting a mid-stream proxy deadline (`incomplete chunked read`).
 - Persist any runtime patches on `/root/.hermes` (for example via `sitecustomize.py` in the persistent managed Python installation under `/root/.hermes/tools/.../site-packages/`) so SPCS pod reschedules do not revert files outside `/root`.
 
+### `standard_single_attempt: Error code: 429` (`Upstream HTTP 429; no retry or fallback`) after long tool runs
+When a tool execution (such as a multi-minute `terminal` build or test run) outlives the 5-minute Anthropic prompt-cache TTL on large contexts (~150k+ tokens), the next turn re-writes the full uncached input context and can exhaust the 60s–90s upstream ITPM bucket on the immediately following tool round:
+- **Proxy layer (`snowflake-proxy-cortexrestapi` / `snowflake-proxy-cortex-aigateway` and fallback `cortex_proxy.py`):** retries transient `HTTP 429`, `503`, and `529` responses across a 100s exponential window (`3s, 7s, 15s, 30s, 45s`), parses numeric, duration (`1m10s`), ISO-8601, and HTTP-date reset headers without allowing zero/short `Retry-After` hints to collapse subsequent backoff steps, and emits standard `error.type = "rate_limit_error"` (`"overloaded_error"` on `529`) with a `Retry-After` response header if upstream throttling persists.
+- **Hermes runtime layer (`agent/turn_api_error.py`):** `standard_single_attempt` fail-fast enforcement is restricted to deterministic non-retryable 4xx client errors (`400`, `401`, `403`, `404`, `422`), while `429`, `413` (context compression), `5xx` (`500`, `502`, `503`, `504`, `529`), and transport/timeout exceptions flow into Hermes's native `compute_error_backoff` and `auto_recover_after_exhaustion` loop.
+
 ## Model Management
 
 ### Model appears in `SHOW CORTEX BASE MODELS` but returns `unknown model` on REST

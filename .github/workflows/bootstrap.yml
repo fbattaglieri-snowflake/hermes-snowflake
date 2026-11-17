@@ -39,7 +39,7 @@ jobs:
             -D "compute_pool=${{ vars.HERMES_COMPUTE_POOL }}" \
             -D "instance_family=${{ vars.HERMES_INSTANCE_FAMILY }}" \
             -D "hermes_image_repository=${{ vars.HERMES_IMAGE_REPOSITORY }}" \
-            -D "egress_integration=HERMES_EGRESS_EAI"
+            -D "egress_integration=${{ vars.HERMES_EGRESS_EAI || 'HERMES_EGRESS_EAI' }}"
       - name: Post-bootstrap reminder
         run: |
           echo "Bootstrap complete. Before deploying, set these secrets via Snowsight or snow sql:"

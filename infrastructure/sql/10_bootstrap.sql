@@ -115,3 +115,12 @@ GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_DASH_USERNAME TO ROLE <%
 GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_DASH_PASSWORD_HASH TO ROLE <% deploy_role %>;
 GRANT READ ON SECRET <% database %>.<% schema %>.HERMES_DASH_SECRET TO ROLE <% deploy_role %>;
 GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO ROLE <% deploy_role %>;
+
+-- Grant Cortex AI inference entitlement to the service owner role (required for
+-- in-container SPCS OAuth token calls and Embedded Fallback mode).
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <% deploy_role %>;
+
+-- Optional (Option B — Snowflake Cortex AI Gateway):
+-- Uncomment if routing Hermes through snowflake-proxy-cortex-aigateway and you
+-- revoked PUBLIC access on AI GATEWAY SNOWFLAKE:
+-- GRANT USAGE ON AI GATEWAY SNOWFLAKE TO ROLE <% deploy_role %>;

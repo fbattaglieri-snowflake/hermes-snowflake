@@ -13,7 +13,8 @@ PROXY_BASE="http://127.0.0.1:${PROXY_PORT}/v1"
 OLLAMA_BASE="${OLLAMA_INTERNAL_URL:-http://ollama-service:11434}"
 ACTIVE_PROVIDER="${HERMES_PROVIDER:-snowflake-standard-responses}"
 DEFAULT_MODEL="${HERMES_MODEL:-openai-gpt-6-astra}"
-export STANDARD_PROXY_ORIGIN="${STANDARD_PROXY_ORIGIN:-http://llm-proxy-standard.core.svc.spcs.internal:8080}"
+export STANDARD_PROXY_ORIGIN="${STANDARD_PROXY_ORIGIN:-}"
+export AIGATEWAY_PROXY_ORIGIN="${AIGATEWAY_PROXY_ORIGIN:-}"
 
 export SNOWFLAKE_HOST="${SNOWFLAKE_HOST:-${SNOWFLAKE_HOST_DEFAULT:-localhost}}"
 
@@ -149,7 +150,38 @@ fi
 
 # ---------------------------------------------------------------- Gateway & Cron Ticker
 gateway_up() {
-    pgrep -f "hermes gateway run" > /dev/null 2>&1
+    python3 -c '
+import json, pathlib, sys
+home = pathlib.Path("/root/.hermes")
+pid_file = home / "gateway.pid"
+if pid_file.exists():
+    try:
+        rec = json.loads(pid_file.read_text())
+        pid = rec.get("pid")
+        if isinstance(pid, int) and pid > 1:
+            argv = (pathlib.Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\x00")
+            if any(argv[i:i+2] == [b"gateway", b"run"] for i in range(len(argv) - 1)):
+                sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+' 2>/dev/null || pgrep -f "hermes gateway run" > /dev/null 2>&1
+}
+
+upstream_ready() {
+    case "$ACTIVE_PROVIDER" in
+        snowflake-aigateway-*)
+            target="${AIGATEWAY_PROXY_ORIGIN:-http://llm-proxy-aigateway.core.svc.spcs.internal:8080}/healthz"
+            curl -fsS -o /dev/null -m 5 "$target" 2>/dev/null
+            ;;
+        snowflake-standard-*)
+            target="${STANDARD_PROXY_ORIGIN:-http://llm-proxy-standard.core.svc.spcs.internal:8080}/healthz"
+            curl -fsS -o /dev/null -m 5 "$target" 2>/dev/null
+            ;;
+        *)
+            proxy_up
+            ;;
+    esac
 }
 
 start_gateway() {
@@ -159,7 +191,11 @@ start_gateway() {
 
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && command -v hermes > /dev/null 2>&1; then
     mkdir -p "${HERMES_DIR}/logs"
-    if proxy_up; then
+    for _ in $(seq 1 20); do
+        upstream_ready && break
+        sleep 1
+    done
+    if upstream_ready || proxy_up; then
         start_gateway
         for _ in $(seq 1 30); do
             gateway_up && break
@@ -182,7 +218,7 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && command -v hermes > /dev/null 2>&1; then
             done
         ) &
     else
-        log "WARN: proxy not ready — gateway not started"
+        log "WARN: upstream proxy not ready — gateway not started"
     fi
 else
     log "TELEGRAM_BOT_TOKEN absent — gateway not started"

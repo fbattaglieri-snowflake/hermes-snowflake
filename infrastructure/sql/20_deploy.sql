@@ -14,7 +14,8 @@ CREATE SERVICE IF NOT EXISTS HERMES_SERVICE
     image_tag => '<% image_tag %>',
     hermes_provider => '<% hermes_provider %>',
     hermes_model => '<% hermes_model %>',
-    standard_proxy_origin => '<% standard_proxy_origin %>'
+    standard_proxy_origin => '<% standard_proxy_origin %>',
+    aigateway_proxy_origin => '<% aigateway_proxy_origin %>'
   )
   AUTO_RESUME = TRUE
   MIN_INSTANCES = 1
@@ -33,5 +34,6 @@ ALTER SERVICE HERMES_SERVICE
     image_tag => '<% image_tag %>',
     hermes_provider => '<% hermes_provider %>',
     hermes_model => '<% hermes_model %>',
-    standard_proxy_origin => '<% standard_proxy_origin %>'
+    standard_proxy_origin => '<% standard_proxy_origin %>',
+    aigateway_proxy_origin => '<% aigateway_proxy_origin %>'
   );

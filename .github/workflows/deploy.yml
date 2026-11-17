@@ -78,8 +78,9 @@ jobs:
             -D "image_tag=${{ github.sha }}" \
             -D "hermes_provider=${{ vars.HERMES_PROVIDER || 'snowflake-standard-responses' }}" \
             -D "hermes_model=${{ vars.HERMES_MODEL || 'openai-gpt-6-astra' }}" \
-            -D "standard_proxy_origin=${{ vars.STANDARD_PROXY_ORIGIN || 'http://llm-proxy-standard.core.svc.spcs.internal:8080' }}" \
-            -D "egress_integration=HERMES_EGRESS_EAI"
+            -D "standard_proxy_origin=${{ vars.STANDARD_PROXY_ORIGIN || '' }}" \
+            -D "aigateway_proxy_origin=${{ vars.AIGATEWAY_PROXY_ORIGIN || '' }}" \
+            -D "egress_integration=${{ vars.HERMES_EGRESS_EAI || 'HERMES_EGRESS_EAI' }}"
       - name: Verify deployed containers and endpoint
         env:
           SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
